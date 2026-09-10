@@ -1410,7 +1410,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
       const data = await res.json();
       if (data.ok) {
         showToast('仓库拉取更新成功！');
-        loadSkills();
+        await loadConfig();
+        await loadSkills();
       } else {
         showToast('更新失败: ' + data.error, true);
       }
@@ -1422,7 +1423,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
       const data = await res.json();
       if (data.ok) {
         showToast('所有仓库源均已拉取至最新！');
-        loadSkills();
+        await loadConfig();
+        await loadSkills();
       } else {
         showToast('拉取存在错误: ' + data.error, true);
       }
@@ -1743,11 +1745,21 @@ class RequestHandler(BaseHTTPRequestHandler):
 
             try:
                 pull_single_source(data)
+                # 拉取成功后将最新的 last_updated 和 last_pulled_ts 持久化写入配置
+                for i, s in enumerate(sources):
+                    if s["id"] == src_id:
+                        sources[i] = data
+                        break
+                cfg["sources"] = sources
+                save_config(cfg)
+                log(f"[Repo] 仓库源 [{data.get('name')}] 配置保存并首次拉取完成")
+
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(b'{"ok": true}')
+                self.wfile.write(json.dumps({"ok": True, "last_updated": data.get("last_updated")}).encode("utf-8"))
             except Exception as e:
+                log(f"仓库源首次拉取失败: {e}", level="ERROR")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -1778,11 +1790,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             try:
                 pull_single_source(target_src)
+                save_config(cfg) # 关键：持久化写入 last_updated 与 last_pulled_ts！
+                log(f"[Pull] 仓库 [{target_src.get('name')}] 手动拉取更新成功 (时间: {target_src.get('last_updated')})")
+
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(b'{"ok": true}')
+                self.wfile.write(json.dumps({"ok": True, "last_updated": target_src.get("last_updated")}).encode("utf-8"))
             except Exception as e:
+                log(f"仓库拉取更新失败: {e}", level="ERROR")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -1797,6 +1813,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                     pull_single_source(s)
                 except Exception as e:
                     errors.append(f"[{s.get('name')}] {e}")
+            save_config(cfg) # 关键：全量更新后持久化写入所有仓库的更新时间！
+            log(f"[PullAll] 全量仓库源拉取更新完成")
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
