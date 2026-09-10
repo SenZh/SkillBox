@@ -1132,7 +1132,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 <span class="${pathBadgeStyle} shrink-0">${pathBadgeText}</span>
                 <span class="font-mono text-[10px] text-slate-700 truncate">${s.effective_install_to}</span>
               </div>
-              <button onclick="openPathModal('${s.name}', '${s.custom_install_to || ''}')" class="text-indigo-600 hover:text-indigo-800 shrink-0 font-semibold hover:underline">修改</button>
+              <button onclick="openPathModal('${s.name}')" class="text-indigo-600 hover:text-indigo-800 shrink-0 font-semibold hover:underline">修改</button>
             </div>
 
             <!-- Action Bar -->
@@ -1429,10 +1429,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
     }
 
     // Modal Operations for Custom Skill Path
-    function openPathModal(skillName, currentCustomPath) {
+    function openPathModal(skillName) {
       currentEditingSkill = skillName;
+      const s = currentSkills.find(item => item.name === skillName);
+      const currentCustomPath = s ? (s.custom_install_to || '') : '';
       document.getElementById('path-modal-skill-name').textContent = skillName;
-      document.getElementById('path-modal-input').value = currentCustomPath || '';
+      document.getElementById('path-modal-input').value = currentCustomPath;
       document.getElementById('path-modal').classList.remove('hidden');
     }
 
