@@ -390,13 +390,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
       <!-- Action Buttons -->
       <div class="flex items-center gap-2.5 shrink-0">
-        <button onclick="pullAllSources()" class="px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium rounded-xl border border-slate-200 shadow-xs transition flex items-center gap-1.5 active:scale-98">
+        <button onclick="pullAllSources()" class="px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium rounded-xl border border-slate-200 shadow-xs transition flex items-center gap-1.5 active:scale-98" title="从远程 Git 仓库拉取最新提交并更新本地缓存">
           <span class="text-indigo-600">🔄</span>
-          <span>拉取更新</span>
+          <span>拉取 Git 更新</span>
         </button>
-        <button id="btn-sync-action" onclick="syncSelected()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-xl shadow-sm transition flex items-center gap-2 active:scale-98">
-          <span>⚡</span>
-          <span>应用同步</span>
+        <button id="btn-sync-action" onclick="syncSelected()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-xl shadow-sm transition flex items-center gap-2 active:scale-98" title="将当前勾选的所有 Skill 挂载安装到对应 Agent 目录，并自动解绑未选中的技能">
+          <span>💾</span>
+          <span>保存并生效挂载</span>
           <span id="selected-counter-badge" class="px-1.5 py-0.2 text-[10px] bg-indigo-500 text-white rounded-full font-mono font-medium">0</span>
         </button>
       </div>
@@ -415,7 +415,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <!-- Search -->
             <div class="relative">
               <span class="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">🔍</span>
-              <input id="search-box" oninput="filterSkills()" type="text" placeholder="全局搜索技能、Tag、目录..." class="pl-8 pr-7 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl w-60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition">
+              <input id="search-box" oninput="filterSkills()" type="text" placeholder="全局搜索技能、Tag、目录..." class="pl-8 pr-7 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl w-56 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition">
               <button id="btn-clear-search" onclick="clearSearch()" class="absolute inset-y-0 right-0 pr-2.5 flex items-center text-slate-400 hover:text-slate-600 text-xs hidden">✕</button>
             </div>
 
@@ -427,6 +427,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <!-- Tag Filter -->
             <select id="tag-filter" onchange="onTagSelectChange()" class="px-3 py-1.5 text-xs border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-700 font-medium">
               <option value="all">所有 Tag 目录</option>
+            </select>
+
+            <!-- Status Filter (过滤显示已挂载技能) -->
+            <select id="status-filter" onchange="filterSkills()" class="px-3 py-1.5 text-xs border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-700 font-medium">
+              <option value="all">所有挂载状态</option>
+              <option value="installed">✓ 仅已挂载 (Installed)</option>
+              <option value="uninstalled">○ 仅未挂载 (Unmounted)</option>
             </select>
 
             <span id="skill-count" class="text-xs text-slate-400 font-mono shrink-0 ml-1">0 个技能</span>
@@ -636,6 +643,59 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <button onclick="closeFolderPathModal()" class="px-3.5 py-2 text-xs text-slate-600 hover:bg-slate-200/80 rounded-xl font-medium transition">取消</button>
           <button onclick="saveFolderPathModal()" class="px-4.5 py-2 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold shadow-xs transition">确认保存并生效</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 4: Skill Detail & Content Preview -->
+  <div id="skill-detail-modal" class="fixed inset-0 modal-backdrop hidden flex items-center justify-center p-4 z-50">
+    <div class="bg-white w-full max-w-3xl max-h-[88vh] rounded-2xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+      <!-- Header -->
+      <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between bg-slate-50/70 shrink-0">
+        <div class="space-y-1.5 min-w-0 flex-1 pr-4">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span id="detail-modal-title" class="font-bold text-base text-slate-900 font-mono"></span>
+            <span id="detail-modal-status-badge" class="text-[10px] px-2 py-0.5 rounded-full font-semibold"></span>
+            <span id="detail-modal-tag-badge" class="text-[10px] px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 font-mono font-medium"></span>
+            <span id="detail-modal-source-badge" class="text-[10px] px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100 font-mono font-medium"></span>
+          </div>
+          <div class="text-[11px] text-slate-500 font-mono truncate" id="detail-modal-path-info"></div>
+        </div>
+        <button onclick="closeSkillDetailModal()" class="text-slate-400 hover:text-slate-600 text-2xl leading-none">&times;</button>
+      </div>
+
+      <!-- Body (Scrollable) -->
+      <div class="p-6 overflow-y-auto space-y-4.5 flex-1 text-xs">
+        <!-- Description Block -->
+        <div class="p-4 bg-slate-50/80 rounded-xl border border-slate-200/80 space-y-1.5">
+          <div class="font-bold text-slate-800 flex items-center gap-1.5 text-xs">
+            <span>📋</span> 功能描述 (Description)
+          </div>
+          <p id="detail-modal-desc" class="text-slate-600 leading-relaxed break-words text-xs"></p>
+        </div>
+
+        <!-- Raw Content / SKILL.md Preview -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-slate-800 flex items-center gap-1.5 text-xs">
+              <span>📄</span> SKILL.md 文档与指令正文 (Content)
+            </span>
+            <button onclick="copySkillDetailContent()" class="text-indigo-600 hover:text-indigo-800 text-[11px] font-semibold flex items-center gap-1 hover:underline">
+              <span>📋</span> 复制正文
+            </button>
+          </div>
+          <pre id="detail-modal-content" class="p-4 bg-slate-900 text-slate-100 rounded-xl text-xs font-mono overflow-x-auto max-h-96 whitespace-pre-wrap leading-relaxed select-all border border-slate-800"></pre>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="px-6 py-3.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between shrink-0">
+        <div class="flex items-center gap-2">
+          <button id="detail-modal-toggle-mount-btn" onclick="toggleDetailModalSkillMount()" class="px-4 py-2 rounded-xl text-xs font-semibold shadow-xs transition flex items-center gap-1.5">
+            <!-- 动态注入按钮文本 -->
+          </button>
+        </div>
+        <button onclick="closeSkillDetailModal()" class="px-4 py-2 text-xs text-slate-600 hover:bg-slate-200/80 rounded-xl font-medium transition">关闭窗口</button>
       </div>
     </div>
   </div>
@@ -1043,10 +1103,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <div>
             <!-- Header Row -->
             <div class="flex items-start justify-between gap-2.5 mb-1.5">
-              <span class="font-bold text-xs text-slate-900 truncate font-mono" title="${s.name}">${s.name}</span>
-              <span class="text-[10px] px-2 py-0.5 rounded-full font-semibold shrink-0 ${s.installed ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}">
-                ${s.installed ? '✓ 已挂载' : '未挂载'}
+              <span class="font-bold text-xs text-slate-900 truncate font-mono cursor-pointer hover:text-indigo-600 hover:underline flex items-center gap-1" onclick="openSkillDetailModal('${s.name}')" title="点击查看详情与文档内容">
+                <span>${s.name}</span>
               </span>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button onclick="openSkillDetailModal('${s.name}')" class="text-[10px] text-slate-400 hover:text-indigo-600 px-1.5 py-0.5 rounded hover:bg-slate-100 transition" title="查看完整文档正文与参数说明">👁️ 详情</button>
+                <span class="text-[10px] px-2 py-0.5 rounded-full font-semibold shrink-0 ${s.installed ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}">
+                  ${s.installed ? '✓ 已挂载' : '未挂载'}
+                </span>
+              </div>
             </div>
 
             <!-- Tags & Badges -->
@@ -1056,8 +1121,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
               ${showPathBadge && s.folder_path ? `<button onclick="navigateTo('${s.folder_path}')" class="bg-slate-100 hover:bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded text-[10px] font-mono transition" title="进入所在目录">📍 ${s.folder_path}</button>` : ''}
             </div>
 
-            <!-- Description -->
-            <p class="text-xs text-slate-500 line-clamp-2 leading-relaxed mb-3" title="${s.desc}">${s.desc}</p>
+            <!-- Description (点击也可展开详情) -->
+            <p onclick="openSkillDetailModal('${s.name}')" class="text-xs text-slate-500 line-clamp-2 leading-relaxed mb-3 cursor-pointer hover:text-slate-700 transition" title="点击阅读完整文档内容">${s.desc}</p>
           </div>
 
           <div>
@@ -1215,6 +1280,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       const q = document.getElementById('search-box').value.toLowerCase().trim();
       const srcFilter = document.getElementById('source-filter').value;
       const tagFilter = currentSelectedTag;
+      const statusFilter = (document.getElementById('status-filter') || {}).value || 'all';
 
       const filtered = currentSkills.filter(s => {
         const matchSearch = !q 
@@ -1226,7 +1292,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         const matchSrc = (srcFilter === 'all') || (s.source_id === srcFilter);
         const matchTag = (tagFilter === 'all') || (s.tag === tagFilter);
 
-        return matchSearch && matchSrc && matchTag;
+        let matchStatus = true;
+        if (statusFilter === 'installed') matchStatus = s.installed;
+        else if (statusFilter === 'uninstalled') matchStatus = !s.installed;
+
+        return matchSearch && matchSrc && matchTag && matchStatus;
       });
       renderSkills(filtered);
     }
@@ -1434,6 +1504,87 @@ HTML_PAGE = r"""<!DOCTYPE html>
       await saveFolderPathModal();
     }
 
+    // Modal Operations for Skill Detail & Content
+    let currentDetailSkill = null;
+
+    async function openSkillDetailModal(skillName) {
+      const s = currentSkills.find(item => item.name === skillName);
+      if (!s) return;
+      currentDetailSkill = s;
+
+      document.getElementById('detail-modal-title').textContent = s.name;
+      document.getElementById('detail-modal-tag-badge').textContent = '📂 ' + s.tag;
+      document.getElementById('detail-modal-source-badge').textContent = '🏷️ ' + s.source_name;
+      document.getElementById('detail-modal-path-info').textContent = '目标挂载路径: ' + s.effective_install_to;
+      document.getElementById('detail-modal-desc').textContent = s.desc || '(暂无功能描述)';
+
+      const statusBadge = document.getElementById('detail-modal-status-badge');
+      statusBadge.textContent = s.installed ? '✓ 已挂载' : '未挂载';
+      statusBadge.className = s.installed ? 'text-[10px] px-2 py-0.5 rounded-full font-semibold bg-emerald-100 text-emerald-700' : 'text-[10px] px-2 py-0.5 rounded-full font-semibold bg-slate-100 text-slate-500';
+
+      const contentBox = document.getElementById('detail-modal-content');
+      contentBox.textContent = '正在加载 SKILL.md 文档正文...';
+      document.getElementById('skill-detail-modal').classList.remove('hidden');
+
+      updateDetailModalMountBtn();
+
+      try {
+        const res = await fetch(`/api/skill/detail?path=${encodeURIComponent(s.source_path)}`);
+        const data = await res.json();
+        if (data.ok) {
+          contentBox.textContent = data.content;
+          if (data.desc) {
+            document.getElementById('detail-modal-desc').textContent = data.desc;
+          }
+        } else {
+          contentBox.textContent = '读取文档失败: ' + (data.error || '未知错误');
+        }
+      } catch (e) {
+        contentBox.textContent = '网络请求异常: ' + e;
+      }
+    }
+
+    function updateDetailModalMountBtn() {
+      if (!currentDetailSkill) return;
+      const isSelected = selectedSkills.has(currentDetailSkill.name);
+      const btn = document.getElementById('detail-modal-toggle-mount-btn');
+      if (isSelected) {
+        btn.textContent = '✓ 已选入挂载 (点击取消)';
+        btn.className = 'px-4 py-2 rounded-xl text-xs font-semibold shadow-xs transition flex items-center gap-1.5 bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100';
+      } else {
+        btn.textContent = '+ 加入挂载清单';
+        btn.className = 'px-4 py-2 rounded-xl text-xs font-semibold shadow-xs transition flex items-center gap-1.5 bg-indigo-600 text-white hover:bg-indigo-700';
+      }
+    }
+
+    function toggleDetailModalSkillMount() {
+      if (!currentDetailSkill) return;
+      const name = currentDetailSkill.name;
+      if (selectedSkills.has(name)) {
+        selectedSkills.delete(name);
+      } else {
+        selectedSkills.add(name);
+      }
+      updateDetailModalMountBtn();
+      updateSelectedCounter();
+      const cb = document.querySelector(`.skill-checkbox[value="${name}"]`);
+      if (cb) cb.checked = selectedSkills.has(name);
+    }
+
+    function closeSkillDetailModal() {
+      document.getElementById('skill-detail-modal').classList.add('hidden');
+      currentDetailSkill = null;
+    }
+
+    function copySkillDetailContent() {
+      const text = document.getElementById('detail-modal-content').textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        showToast('SKILL.md 正文内容已复制到剪贴板！');
+      }).catch(() => {
+        showToast('复制失败，请手动选择复制', true);
+      });
+    }
+
     // Sync Selected
     async function syncSelected() {
       const selected = Array.from(selectedSkills);
@@ -1499,6 +1650,30 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"logs": lines}).encode("utf-8"))
+        elif url.path == "/api/skill/detail":
+            from urllib.parse import parse_qs
+            params = parse_qs(url.query)
+            target_path = params.get("path", [""])[0]
+            p = Path(target_path)
+            if p.exists() and p.is_dir():
+                md_file = p / "SKILL.md" if (p / "SKILL.md").exists() else (p / "skill.md")
+                raw_content = ""
+                if md_file.exists():
+                    raw_content = md_file.read_text(encoding="utf-8", errors="ignore")
+                desc, tags = parse_skill_metadata(p)
+                data_resp = {
+                    "ok": True,
+                    "name": p.name,
+                    "desc": desc,
+                    "tags": tags,
+                    "content": raw_content or "(暂无文档正文内容)"
+                }
+            else:
+                data_resp = {"ok": False, "error": "技能路径不存在"}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(data_resp).encode("utf-8"))
         else:
             self.send_response(404)
             self.end_headers()
