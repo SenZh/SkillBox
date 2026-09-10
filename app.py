@@ -1,11 +1,13 @@
 import os
 import sys
 import json
+import time
 import shutil
+import threading
 import subprocess
 import webbrowser
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -433,15 +435,37 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode("utf-8"))
 
 def main():
-    port = 7860
-    server = HTTPServer(("127.0.0.1", port), RequestHandler)
-    url = f"http://127.0.0.1:{port}"
-    print(f"[*] SkillBox 服务已启动: {url}")
-    webbrowser.open(url)
+    base_port = 7860
+    max_port = 7880
+    server = None
+    actual_port = base_port
+
+    for port in range(base_port, max_port):
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", port), RequestHandler)
+            actual_port = port
+            break
+        except OSError:
+            continue
+
+    if not server:
+        print(f"[!] 无法启动服务：端口 {base_port}~{max_port} 均被占用。", flush=True)
+        sys.exit(1)
+
+    url = f"http://127.0.0.1:{actual_port}"
+    print(f"[*] SkillBox 服务已成功启动: {url}", flush=True)
+    print(f"[*] 提示：按 Ctrl+C 可停止服务。", flush=True)
+
+    def delayed_open():
+        time.sleep(0.6)
+        webbrowser.open(url)
+
+    threading.Thread(target=delayed_open, daemon=True).start()
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n[!] SkillBox 服务已退出。")
+        print("\n[!] SkillBox 服务已安全退出。", flush=True)
 
 if __name__ == "__main__":
     main()
