@@ -2,7 +2,6 @@ import os
 import sys
 import json
 import time
-import uuid
 import shutil
 import threading
 import subprocess
@@ -27,7 +26,6 @@ def load_config():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
-                # 兼容旧配置
                 if "install_to" in saved and "default_install_to" not in saved:
                     saved["default_install_to"] = saved["install_to"]
                 if "git_url" in saved and saved.get("git_url") and not saved.get("sources"):
@@ -137,17 +135,13 @@ def scan_all_skills(cfg):
         if not sub_dir.exists():
             continue
 
-        # 深度递归扫描所有包含 SKILL.md 或 skill.md 的目录
         for root, dirs, files in os.walk(sub_dir):
-            # 过滤掉隐藏目录
             dirs[:] = [d for d in dirs if not d.startswith(".")]
 
             p_root = Path(root)
             if (p_root / "SKILL.md").exists() or (p_root / "skill.md").exists():
                 skill_name = p_root.name
                 rel_path = p_root.relative_to(sub_dir)
-                
-                # 按照用户要求：tag 按照 skill 所属目录名计算 (例如 A/B/C 下，tag=C)
                 tag = p_root.parent.name if p_root.parent != sub_dir and p_root.parent.name else (sub_dir.name or "root")
                 folder_path = str(rel_path.parent).replace("\\", "/") if str(rel_path.parent) != "." else ""
                 desc, file_tags = parse_skill_metadata(p_root)
@@ -174,7 +168,7 @@ def scan_all_skills(cfg):
 
     return all_skills
 
-HTML_PAGE = """<!DOCTYPE html>
+HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -182,190 +176,238 @@ HTML_PAGE = """<!DOCTYPE html>
   <title>SkillBox - AI 技能管理器</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    .modal-backdrop { background: rgba(15, 23, 42, 0.4); backdrop-filter: blur(2px); }
+    .modal-backdrop { background: rgba(15, 23, 42, 0.45); backdrop-filter: blur(4px); }
+    /* 自定义滚动条 */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
   </style>
 </head>
-<body class="bg-slate-50 text-slate-800 min-h-screen">
-  <div class="max-w-7xl mx-auto px-4 py-8">
-    <!-- Header -->
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8 pb-4 border-b border-slate-200">
-      <div>
-        <h1 class="text-2xl font-bold text-slate-900 flex items-center gap-2">
-          <span>📦</span> SkillBox
-        </h1>
-        <p class="text-sm text-slate-500 mt-1">多 Git 仓库与独立分支 · 默认/专属自定义路径 · 目录联结秒级挂载</p>
+<body class="bg-[#f8fafc] text-slate-800 min-h-screen font-sans antialiased flex flex-col">
+  <!-- Top Navigation Header -->
+  <header class="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/80 shadow-xs">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
+      <!-- Logo & Primary Tabs -->
+      <div class="flex items-center gap-8 min-w-0">
+        <div class="flex items-center gap-2.5 shrink-0 cursor-pointer" onclick="switchPage('skills')">
+          <span class="text-2xl">📦</span>
+          <span class="font-bold text-lg text-slate-900 tracking-tight">SkillBox</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100 font-mono font-medium">v2.0</span>
+        </div>
+
+        <!-- 页面 Tab 切换导航 -->
+        <nav class="flex items-center gap-1 bg-slate-100/80 p-1 rounded-xl border border-slate-200/60">
+          <button id="nav-tab-skills" onclick="switchPage('skills')" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 bg-white text-indigo-600 shadow-xs">
+            <span>🗂️</span>
+            <span>技能工作区</span>
+          </button>
+          <button id="nav-tab-settings" onclick="switchPage('settings')" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-slate-900 transition flex items-center gap-1.5">
+            <span>⚙️</span>
+            <span>仓库与配置</span>
+            <span id="nav-repo-badge" class="px-1.5 py-0.2 text-[10px] rounded-full bg-slate-200/80 text-slate-600 font-mono">0</span>
+          </button>
+        </nav>
       </div>
-      <div class="flex items-center gap-3">
-        <button onclick="pullAllSources()" class="px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-sm font-medium rounded-lg transition border border-indigo-200 flex items-center gap-1.5 shadow-sm">
-          <span>🔄</span> 全部拉取/更新
+
+      <!-- Action Buttons -->
+      <div class="flex items-center gap-2.5 shrink-0">
+        <button onclick="pullAllSources()" class="px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium rounded-xl border border-slate-200 shadow-xs transition flex items-center gap-1.5 active:scale-98">
+          <span class="text-indigo-600">🔄</span>
+          <span>拉取更新</span>
         </button>
-        <button onclick="syncSelected()" class="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg shadow-sm transition flex items-center gap-1.5">
-          <span>⚡</span> 应用同步
+        <button id="btn-sync-action" onclick="syncSelected()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-xl shadow-sm transition flex items-center gap-2 active:scale-98">
+          <span>⚡</span>
+          <span>应用同步</span>
+          <span id="selected-counter-badge" class="px-1.5 py-0.2 text-[10px] bg-indigo-500 text-white rounded-full font-mono font-medium">0</span>
         </button>
       </div>
     </div>
+  </header>
 
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
-      <!-- Left Column: Config & Sources -->
-      <div class="lg:col-span-4 space-y-6 min-w-0">
-        <!-- 1. Default Install Path Card -->
-        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-          <h2 class="text-sm font-semibold text-slate-900 mb-3 flex items-center justify-between">
-            <span>📁 全局默认安装目录</span>
-            <span class="text-[10px] text-slate-400 font-normal">未单独配置的 Skill 均装在此处</span>
-          </h2>
-          <div class="space-y-3">
-            <input id="cfg-default-install" type="text" placeholder="如: C:\\Users\\...\\.agents\\skills" class="w-full px-3 py-2 text-xs border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            <button onclick="saveDefaultInstallPath()" class="w-full py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-medium rounded-md transition shadow-sm">
-              保存默认路径
-            </button>
+  <!-- Main Content Container -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
+    <!-- ================= PAGE 1: SKILLS WORKSPACE ================= -->
+    <div id="page-skills" class="space-y-4">
+      <!-- Toolbar Filter Bar -->
+      <div class="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs space-y-3">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <!-- Search & Selects -->
+          <div class="flex items-center gap-2.5 flex-wrap min-w-0">
+            <!-- Search -->
+            <div class="relative">
+              <span class="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">🔍</span>
+              <input id="search-box" oninput="filterSkills()" type="text" placeholder="全局搜索技能、Tag、目录..." class="pl-8 pr-7 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl w-60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition">
+              <button id="btn-clear-search" onclick="clearSearch()" class="absolute inset-y-0 right-0 pr-2.5 flex items-center text-slate-400 hover:text-slate-600 text-xs hidden">✕</button>
+            </div>
+
+            <!-- Repo Source Filter -->
+            <select id="source-filter" onchange="filterSkills()" class="px-3 py-1.5 text-xs border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-700 font-medium">
+              <option value="all">所有仓库源</option>
+            </select>
+
+            <!-- Tag Filter -->
+            <select id="tag-filter" onchange="onTagSelectChange()" class="px-3 py-1.5 text-xs border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-700 font-medium">
+              <option value="all">所有 Tag 目录</option>
+            </select>
+
+            <span id="skill-count" class="text-xs text-slate-400 font-mono shrink-0 ml-1">0 个技能</span>
+          </div>
+
+          <!-- View Switcher & Bulk Selection -->
+          <div class="flex items-center gap-3 text-xs shrink-0 self-end md:self-auto">
+            <div class="inline-flex rounded-xl border border-slate-200 bg-slate-100/60 p-0.5">
+              <button id="view-btn-folder" onclick="switchView('folder')" class="px-3 py-1 rounded-lg text-xs font-semibold bg-white text-indigo-600 shadow-xs transition flex items-center gap-1">
+                <span>📁</span> 目录树进入
+              </button>
+              <button id="view-btn-grid" onclick="switchView('grid')" class="px-3 py-1 rounded-lg text-xs font-medium text-slate-600 hover:text-slate-900 transition flex items-center gap-1">
+                <span>▦</span> 全部平铺
+              </button>
+            </div>
+            <div class="h-4 w-px bg-slate-200"></div>
+            <button onclick="selectAll(true)" class="text-indigo-600 hover:text-indigo-800 font-medium">全选</button>
+            <span class="text-slate-300">/</span>
+            <button onclick="selectAll(false)" class="text-slate-500 hover:text-slate-800 font-medium">清空</button>
           </div>
         </div>
 
-        <!-- 2. Git Sources Management -->
-        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm min-w-0">
-          <div class="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
-            <h2 class="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
-              <span>🌿 Git 仓库源列表</span>
-              <span id="sources-count" class="text-xs text-slate-400 font-normal">(0)</span>
+        <!-- Tag Pills (快捷胶囊栏) -->
+        <div id="tag-pills-bar" class="flex items-center gap-1.5 flex-wrap text-[11px] pt-2 border-t border-slate-100">
+          <!-- 动态注入 -->
+        </div>
+      </div>
+
+      <!-- Breadcrumb Navigation Bar (在文件树视图或搜索时显示) -->
+      <div id="breadcrumb-nav" class="flex items-center justify-between gap-3 px-4 py-2.5 bg-white rounded-2xl border border-slate-200/80 shadow-xs min-w-0">
+        <div class="flex items-center gap-1.5 text-xs flex-wrap min-w-0 font-medium" id="breadcrumb-trail">
+          <!-- 面包屑节点 -->
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <button id="btn-back-parent" onclick="navigateUp()" class="px-3 py-1 bg-slate-100 hover:bg-slate-200/80 text-slate-700 rounded-lg text-xs font-medium transition flex items-center gap-1.5 active:scale-98">
+            <span>⬅</span> 返回上一级
+          </button>
+          <button id="btn-select-current-dir" onclick="selectCurrentDirSkills(true)" class="px-3 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-xs font-semibold transition active:scale-98">
+            全选本目录
+          </button>
+        </div>
+      </div>
+
+      <!-- Skills Explorer View Container -->
+      <div id="skills-container" class="space-y-4">
+        <!-- 动态生成子文件夹或具体技能卡片 -->
+      </div>
+    </div>
+
+    <!-- ================= PAGE 2: SETTINGS & REPOSITORIES ================= -->
+    <div id="page-settings" class="hidden max-w-4xl mx-auto space-y-6">
+      <!-- Section 1: Global Default Path -->
+      <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
+        <div class="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <h2 class="text-base font-bold text-slate-900 flex items-center gap-2">
+              <span>📁</span> 全局默认安装目录
             </h2>
-            <button onclick="openSourceModal()" class="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded-md shadow-sm transition flex items-center gap-1">
-              <span>+</span> 添加仓库
-            </button>
+            <p class="text-xs text-slate-500 mt-1">未单独为具体 Skill 配置专属路径时，所有技能默认通过目录联结（Junction/Symlink）挂载至该目录。</p>
           </div>
-
-          <div id="sources-list" class="space-y-2.5 min-w-0">
-            <div class="py-8 text-center text-xs text-slate-400">暂无 Git 仓库，请点击上方按钮添加</div>
+          <button onclick="saveDefaultInstallPath()" class="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl transition shadow-xs shrink-0">
+            保存默认路径
+          </button>
+        </div>
+        <div class="space-y-2">
+          <input id="cfg-default-install" type="text" placeholder="如: C:\\Users\\Name\\.agents\\skills" class="w-full px-3.5 py-2.5 text-xs font-mono border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition">
+          <div class="flex items-center gap-2 text-[11px] text-slate-400">
+            <span>💡 推荐填入你的 Agent 全局技能目录，例如 OpenCode、Claude Code、Cursor 所读取的 skills 文件夹。</span>
           </div>
         </div>
-
-        <div id="status-box" class="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600 hidden break-words leading-relaxed"></div>
       </div>
 
-      <!-- Right Column: Skills Explorer -->
-      <div class="lg:col-span-8 min-w-0">
-        <!-- Top Toolbar -->
-        <div class="space-y-3 mb-4">
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div class="flex items-center gap-2 flex-wrap min-w-0">
-              <input id="search-box" oninput="filterSkills()" type="text" placeholder="搜索技能名称、简介、标签..." class="px-3 py-1.5 text-xs border border-slate-300 rounded-lg w-44 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-              <select id="source-filter" onchange="filterSkills()" class="px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="all">所有仓库源</option>
-              </select>
-              <select id="tag-filter" onchange="onTagSelectChange()" class="px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="all">所有 Tag / 所属目录</option>
-              </select>
-              <span id="skill-count" class="text-xs text-slate-500 shrink-0">共 0 个技能</span>
-            </div>
-
-            <!-- View Switcher & Actions -->
-            <div class="flex items-center gap-2 text-xs shrink-0">
-              <!-- 视图切换 -->
-              <div class="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs">
-                <button id="view-btn-folder" onclick="switchView('folder')" class="px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-600 text-white shadow-2xs transition flex items-center gap-1">
-                  <span>📁</span> 目录树浏览
-                </button>
-                <button id="view-btn-grid" onclick="switchView('grid')" class="px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 hover:text-slate-900 transition flex items-center gap-1">
-                  <span>▦</span> 平铺所有
-                </button>
-              </div>
-              <span class="text-slate-300">|</span>
-              <button onclick="selectAll(true)" class="text-indigo-600 hover:underline">全选</button>
-              <span class="text-slate-300">|</span>
-              <button onclick="selectAll(false)" class="text-indigo-600 hover:underline">清空</button>
-            </div>
+      <!-- Section 2: Git Repositories Management -->
+      <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs space-y-5">
+        <div class="flex items-center justify-between pb-4 border-b border-slate-100">
+          <div>
+            <h2 class="text-base font-bold text-slate-900 flex items-center gap-2">
+              <span>🌿</span> Git 仓库源管理
+            </h2>
+            <p class="text-xs text-slate-500 mt-1">纳管企业私有 GitLab、GitHub 或自建 Git 仓库，支持指定具体分支与 Skill 所在的子目录。</p>
           </div>
-
-          <!-- Tag Pills 快捷标签过滤栏 -->
-          <div id="tag-pills-bar" class="flex items-center gap-1.5 flex-wrap text-[11px] pt-1 border-t border-slate-100">
-            <!-- 动态填充 -->
-          </div>
+          <button onclick="openSourceModal()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-xl shadow-xs transition flex items-center gap-1.5 active:scale-98 shrink-0">
+            <span>+</span> 添加仓库源
+          </button>
         </div>
 
-        <!-- Breadcrumb Navigation Bar (像文件管理器一样逐层进入) -->
-        <div id="breadcrumb-nav" class="flex items-center justify-between gap-2 p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs mb-4 min-w-0">
-          <div class="flex items-center gap-1.5 text-xs flex-wrap min-w-0" id="breadcrumb-trail">
-            <!-- 动态面包屑 -->
-          </div>
-          <div class="flex items-center gap-2 shrink-0">
-            <button id="btn-back-parent" onclick="navigateUp()" class="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md text-xs font-medium transition flex items-center gap-1">
-              <span>⬅</span> 返回上一级
-            </button>
-            <button id="btn-select-current-dir" onclick="selectCurrentDirSkills(true)" class="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-md text-xs font-medium transition">
-              全选本级
-            </button>
-          </div>
-        </div>
-
-        <!-- Skills Container (Dynamic Sub-folders & Skills) -->
-        <div id="skills-container" class="space-y-4">
-          <div class="py-16 text-center text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">
-            暂无扫描到的技能，请先在左侧添加 Git 仓库源并点击「拉取/更新」
-          </div>
+        <!-- Repositories List Grid -->
+        <div id="settings-sources-list" class="space-y-3.5">
+          <!-- 动态注入仓库卡片 -->
         </div>
       </div>
     </div>
-  </div>
+  </main>
 
   <!-- Modal 1: Add/Edit Git Source -->
   <div id="source-modal" class="fixed inset-0 modal-backdrop hidden flex items-center justify-center p-4 z-50">
-    <div class="bg-white w-full max-w-md rounded-xl border border-slate-200 shadow-xl overflow-hidden">
-      <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-        <h3 id="modal-title" class="font-semibold text-sm text-slate-900">添加 Git 仓库源</h3>
+    <div class="bg-white w-full max-w-lg rounded-2xl border border-slate-200 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+      <div class="px-6 py-4.5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+        <h3 id="modal-title" class="font-bold text-sm text-slate-900">配置 Git 仓库源</h3>
         <button onclick="closeSourceModal()" class="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
       </div>
-      <div class="p-5 space-y-3.5">
+      <div class="p-6 space-y-4">
         <input type="hidden" id="modal-src-id">
         <div>
-          <label class="block text-xs font-medium text-slate-600 mb-1">仓库名称 (别名)</label>
-          <input id="modal-src-name" type="text" placeholder="如: 业务中台技能库" class="w-full px-3 py-2 text-xs border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <label class="block text-xs font-semibold text-slate-700 mb-1.5">仓库名称 (别名)</label>
+          <input id="modal-src-name" type="text" placeholder="如: 业务中台技能库" class="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
         </div>
         <div>
-          <label class="block text-xs font-medium text-slate-600 mb-1">Git 仓库地址 (HTTP/SSH/GitLab)</label>
-          <input id="modal-src-url" type="text" placeholder="如: git@gitlab.com:org/skills.git" class="w-full px-3 py-2 text-xs border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <label class="block text-xs font-semibold text-slate-700 mb-1.5">Git 仓库地址 (HTTP / HTTPS / SSH)</label>
+          <input id="modal-src-url" type="text" placeholder="如: git@gitlab.com:org/skills.git" class="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
         </div>
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-2 gap-4">
           <div>
-            <label class="block text-xs font-medium text-slate-600 mb-1">Git 分支 (Branch)</label>
-            <input id="modal-src-branch" type="text" placeholder="如: main、dev" class="w-full px-3 py-2 text-xs border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <label class="block text-xs font-semibold text-slate-700 mb-1.5">指定分支 (Branch)</label>
+            <input id="modal-src-branch" type="text" placeholder="如: main、dev、feature/v1" class="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
           </div>
           <div>
-            <label class="block text-xs font-medium text-slate-600 mb-1">Skill 子目录</label>
-            <input id="modal-src-subdir" type="text" placeholder="如: skills 或 ." class="w-full px-3 py-2 text-xs border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <label class="block text-xs font-semibold text-slate-700 mb-1.5">Skill 相对子目录</label>
+            <input id="modal-src-subdir" type="text" placeholder="如: skills 或 . (根目录)" class="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
           </div>
         </div>
       </div>
-      <div class="px-5 py-3.5 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2">
-        <button onclick="closeSourceModal()" class="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-200 rounded-md transition">取消</button>
-        <button onclick="saveSourceModal()" class="px-4 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded-md font-medium shadow-sm transition">保存并立即拉取</button>
+      <div class="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2.5">
+        <button onclick="closeSourceModal()" class="px-4 py-2 text-xs text-slate-600 hover:bg-slate-200/80 rounded-xl font-medium transition">取消</button>
+        <button onclick="saveSourceModal()" class="px-5 py-2 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold shadow-xs transition">保存并立即拉取</button>
       </div>
     </div>
   </div>
 
   <!-- Modal 2: Custom Skill Path -->
   <div id="path-modal" class="fixed inset-0 modal-backdrop hidden flex items-center justify-center p-4 z-50">
-    <div class="bg-white w-full max-w-md rounded-xl border border-slate-200 shadow-xl overflow-hidden">
-      <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-        <h3 class="font-semibold text-sm text-slate-900">自定义安装路径</h3>
+    <div class="bg-white w-full max-w-md rounded-2xl border border-slate-200 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+      <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+        <h3 class="font-bold text-sm text-slate-900">自定义安装目标路径</h3>
         <button onclick="closePathModal()" class="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
       </div>
-      <div class="p-5 space-y-3">
+      <div class="p-6 space-y-3.5">
         <p class="text-xs text-slate-500 leading-relaxed">
-          为技能 <span id="path-modal-skill-name" class="font-semibold text-slate-800"></span> 指定单独的安装目录。留空则恢复继承全局默认路径。
+          为技能 <span id="path-modal-skill-name" class="font-bold text-slate-900 font-mono"></span> 指定专属的安装目录（例如特定项目的本地 skills 文件夹）。留空则自动恢复继承全局默认路径。
         </p>
         <div>
-          <label class="block text-xs font-medium text-slate-600 mb-1">专属安装目标目录</label>
-          <input id="path-modal-input" type="text" placeholder="如: D:\\ws\\my-app\\.opencode\\skills" class="w-full px-3 py-2 text-xs border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <label class="block text-xs font-semibold text-slate-700 mb-1.5">专属目标目录绝对路径</label>
+          <input id="path-modal-input" type="text" placeholder="如: D:\my-project\.opencode\skills" class="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
         </div>
       </div>
-      <div class="px-5 py-3.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-        <button onclick="resetSkillPathToDefault()" class="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-800 transition underline">恢复为默认路径</button>
+      <div class="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+        <button onclick="resetSkillPathToDefault()" class="text-xs text-slate-500 hover:text-slate-900 transition underline">恢复为全局默认路径</button>
         <div class="flex items-center gap-2">
-          <button onclick="closePathModal()" class="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-200 rounded-md transition">取消</button>
-          <button onclick="saveSkillPathModal()" class="px-4 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded-md font-medium shadow-sm transition">确认保存</button>
+          <button onclick="closePathModal()" class="px-3.5 py-2 text-xs text-slate-600 hover:bg-slate-200/80 rounded-xl font-medium transition">取消</button>
+          <button onclick="saveSkillPathModal()" class="px-4.5 py-2 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold shadow-xs transition">确认保存</button>
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- Floating Toast Notification -->
+  <div id="toast" class="fixed bottom-6 right-6 z-50 px-4 py-3 bg-slate-900 text-white text-xs font-medium rounded-2xl shadow-xl border border-slate-700/50 hidden flex items-center gap-2.5 transition-all">
+    <span id="toast-icon">✨</span>
+    <span id="toast-msg">操作成功</span>
   </div>
 
   <script>
@@ -373,45 +415,78 @@ HTML_PAGE = """<!DOCTYPE html>
     let currentSkills = [];
     let currentEditingSkill = '';
     let currentSelectedTag = 'all';
-    let currentViewMode = 'folder'; // 'folder' (逐层进入) | 'grid' (平铺)
-    let currentNavPath = ''; // 当前所在相对路径，'' 表示根目录
+    let currentViewMode = 'folder'; // 'folder' | 'grid'
+    let currentNavPath = ''; // 相对路径，'' 为根目录
+    let activePage = 'skills'; // 'skills' | 'settings'
 
     async function init() {
       await loadConfig();
       await loadSkills();
     }
 
+    // Page Switching (单页 Tab 切换)
+    function switchPage(page) {
+      activePage = page;
+      const tabSkills = document.getElementById('nav-tab-skills');
+      const tabSettings = document.getElementById('nav-tab-settings');
+      const pageSkills = document.getElementById('page-skills');
+      const pageSettings = document.getElementById('page-settings');
+
+      if (page === 'skills') {
+        tabSkills.className = "px-3.5 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 bg-white text-indigo-600 shadow-xs";
+        tabSettings.className = "px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-slate-900 transition flex items-center gap-1.5";
+        pageSkills.classList.remove('hidden');
+        pageSettings.classList.add('hidden');
+      } else {
+        tabSettings.className = "px-3.5 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 bg-white text-indigo-600 shadow-xs";
+        tabSkills.className = "px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-slate-900 transition flex items-center gap-1.5";
+        pageSettings.classList.remove('hidden');
+        pageSkills.classList.add('hidden');
+      }
+    }
+
     async function loadConfig() {
       const res = await fetch('/api/config');
       globalConfig = await res.json();
       document.getElementById('cfg-default-install').value = globalConfig.default_install_to || '';
-      renderSources(globalConfig.sources || []);
+      renderSettingsSources(globalConfig.sources || []);
       updateSourceFilterOptions(globalConfig.sources || []);
+      document.getElementById('nav-repo-badge').textContent = (globalConfig.sources || []).length;
     }
 
-    function renderSources(sources) {
-      const el = document.getElementById('sources-list');
-      document.getElementById('sources-count').textContent = `(${sources.length})`;
-      if (sources.length === 0) {
-        el.innerHTML = `<div class="py-8 text-center text-xs text-slate-400">暂无 Git 仓库，请点击上方按钮添加</div>`;
+    // 渲染「设置页」中的仓库源卡片
+    function renderSettingsSources(sources) {
+      const el = document.getElementById('settings-sources-list');
+      if (!sources || sources.length === 0) {
+        el.innerHTML = `
+          <div class="py-12 text-center text-xs text-slate-400 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
+            暂无已配置的 Git 仓库源，请点击右上角「+ 添加仓库源」添加
+          </div>
+        `;
         return;
       }
       el.innerHTML = sources.map(s => `
-        <div class="p-3 bg-slate-50 hover:bg-slate-100/80 border border-slate-200 rounded-lg transition flex flex-col justify-between gap-2 min-w-0 overflow-hidden w-full">
-          <div class="flex items-start justify-between gap-2 min-w-0 w-full">
-            <div class="min-w-0 flex-1 overflow-hidden">
-              <div class="font-semibold text-xs text-slate-900 flex items-center gap-1.5 min-w-0">
-                <span class="truncate">${s.name || '未命名'}</span>
-                <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100 font-mono shrink-0">${s.branch || 'main'}</span>
-              </div>
-              <div class="text-[11px] text-slate-400 font-mono truncate block w-full mt-1 select-all" title="${s.git_url}">${s.git_url}</div>
-              <div class="text-[10px] text-slate-500 mt-1 truncate">子目录: <span class="font-mono text-slate-700">${s.sub_dir || '.'}</span></div>
+        <div class="p-4 bg-slate-50/60 hover:bg-white border border-slate-200/80 hover:border-slate-300 rounded-2xl transition shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div class="min-w-0 flex-1 space-y-1">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-bold text-sm text-slate-900">${s.name || '未命名'}</span>
+              <span class="text-[10px] px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100 font-mono font-semibold">分支: ${s.branch || 'main'}</span>
+              <span class="text-[10px] px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 font-mono">子目录: ${s.sub_dir || '.'}</span>
+            </div>
+            <div class="text-xs text-slate-400 font-mono truncate select-all" title="${s.git_url}">
+              ${s.git_url}
             </div>
           </div>
-          <div class="flex items-center justify-end gap-1.5 pt-2 border-t border-slate-200/60 text-xs shrink-0">
-            <button onclick="pullSingleSource('${s.id}')" class="px-2 py-0.5 text-[11px] bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200 rounded transition">🔄 更新</button>
-            <button onclick="editSource('${s.id}')" class="px-2 py-0.5 text-[11px] bg-white hover:bg-slate-200 text-slate-600 border border-slate-200 rounded transition">✏️ 编辑</button>
-            <button onclick="deleteSource('${s.id}')" class="px-2 py-0.5 text-[11px] bg-white hover:bg-rose-50 text-rose-600 border border-slate-200 rounded transition">🗑️ 删除</button>
+          <div class="flex items-center gap-2 shrink-0 self-end md:self-auto">
+            <button onclick="pullSingleSource('${s.id}')" class="px-3 py-1.5 text-xs bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl font-medium transition shadow-2xs flex items-center gap-1 active:scale-98">
+              <span>🔄</span> 更新
+            </button>
+            <button onclick="editSource('${s.id}')" class="px-3 py-1.5 text-xs bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl font-medium transition shadow-2xs flex items-center gap-1 active:scale-98">
+              <span>✏️</span> 编辑
+            </button>
+            <button onclick="deleteSource('${s.id}')" class="px-3 py-1.5 text-xs bg-white hover:bg-rose-50 text-rose-600 border border-slate-200 rounded-xl font-medium transition shadow-2xs flex items-center gap-1 active:scale-98">
+              <span>🗑️</span> 移除
+            </button>
           </div>
         </div>
       `).join('');
@@ -420,8 +495,8 @@ HTML_PAGE = """<!DOCTYPE html>
     function updateSourceFilterOptions(sources) {
       const select = document.getElementById('source-filter');
       const val = select.value;
-      select.innerHTML = `<option value="all">所有仓库源</option>` + sources.map(s => `
-        <option value="${s.id}">${s.name} (${s.branch})</option>
+      select.innerHTML = `<option value="all">所有仓库源 (${sources.length})</option>` + sources.map(s => `
+        <option value="${s.id}">${s.name} [${s.branch}]</option>
       `).join('');
       if (Array.from(select.options).some(o => o.value === val)) {
         select.value = val;
@@ -437,10 +512,10 @@ HTML_PAGE = """<!DOCTYPE html>
 
       const sortedTags = Object.keys(tagCounts).sort((a, b) => tagCounts[b] - tagCounts[a]);
 
-      // 1. 更新下拉选择框
+      // 1. 下拉菜单
       const select = document.getElementById('tag-filter');
       const curVal = select.value;
-      select.innerHTML = `<option value="all">所有 Tag / 所属目录 (${skills.length})</option>` + sortedTags.map(t => `
+      select.innerHTML = `<option value="all">所有 Tag 目录 (${skills.length})</option>` + sortedTags.map(t => `
         <option value="${t}">${t} (${tagCounts[t]})</option>
       `).join('');
       if (sortedTags.includes(curVal)) {
@@ -450,17 +525,17 @@ HTML_PAGE = """<!DOCTYPE html>
         currentSelectedTag = 'all';
       }
 
-      // 2. 渲染快捷胶囊栏
+      // 2. 快捷胶囊栏 (取前 15 个分类)
       const pillsContainer = document.getElementById('tag-pills-bar');
-      const topTags = sortedTags.slice(0, 16);
+      const topTags = sortedTags.slice(0, 15);
       pillsContainer.innerHTML = `
-        <span class="text-slate-400 mr-1 shrink-0">Tag 过滤:</span>
-        <button onclick="selectTag('all')" class="px-2 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 ${currentSelectedTag === 'all' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
+        <span class="text-slate-400 mr-1 shrink-0 font-medium">快捷过滤:</span>
+        <button onclick="selectTag('all')" class="px-2.5 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 ${currentSelectedTag === 'all' ? 'bg-indigo-600 text-white shadow-2xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
           全部 (${skills.length})
         </button>
       ` + topTags.map(t => `
-        <button onclick="selectTag('${t}')" class="px-2 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 ${currentSelectedTag === t ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
-          ${t} <span class="opacity-70">(${tagCounts[t]})</span>
+        <button onclick="selectTag('${t}')" class="px-2.5 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 ${currentSelectedTag === t ? 'bg-indigo-600 text-white shadow-2xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
+          ${t} <span class="opacity-75">(${tagCounts[t]})</span>
         </button>
       `).join('');
     }
@@ -482,11 +557,11 @@ HTML_PAGE = """<!DOCTYPE html>
       document.querySelectorAll('#tag-pills-bar button').forEach(btn => {
         const text = btn.textContent.trim();
         if (currentSelectedTag === 'all' && text.startsWith('全部')) {
-          btn.className = "px-2 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 bg-indigo-600 text-white shadow-xs";
+          btn.className = "px-2.5 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 bg-indigo-600 text-white shadow-2xs";
         } else if (text.startsWith(currentSelectedTag + ' ') || text === currentSelectedTag) {
-          btn.className = "px-2 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 bg-indigo-600 text-white shadow-xs";
+          btn.className = "px-2.5 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 bg-indigo-600 text-white shadow-2xs";
         } else {
-          btn.className = "px-2 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 bg-slate-100 text-slate-600 hover:bg-slate-200";
+          btn.className = "px-2.5 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 bg-slate-100 text-slate-600 hover:bg-slate-200";
         }
       });
     }
@@ -498,24 +573,24 @@ HTML_PAGE = """<!DOCTYPE html>
       const breadcrumbNav = document.getElementById('breadcrumb-nav');
 
       if (mode === 'folder') {
-        btnFolder.className = "px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-600 text-white shadow-2xs transition flex items-center gap-1";
-        btnGrid.className = "px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 hover:text-slate-900 transition flex items-center gap-1";
+        btnFolder.className = "px-3 py-1 rounded-lg text-xs font-semibold bg-white text-indigo-600 shadow-xs transition flex items-center gap-1";
+        btnGrid.className = "px-3 py-1 rounded-lg text-xs font-medium text-slate-600 hover:text-slate-900 transition flex items-center gap-1";
         breadcrumbNav.classList.remove('hidden');
       } else {
-        btnGrid.className = "px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-600 text-white shadow-2xs transition flex items-center gap-1";
-        btnFolder.className = "px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 hover:text-slate-900 transition flex items-center gap-1";
+        btnGrid.className = "px-3 py-1 rounded-lg text-xs font-semibold bg-white text-indigo-600 shadow-xs transition flex items-center gap-1";
+        btnFolder.className = "px-3 py-1 rounded-lg text-xs font-medium text-slate-600 hover:text-slate-900 transition flex items-center gap-1";
         breadcrumbNav.classList.add('hidden');
       }
       filterSkills();
     }
 
-    // 目录树下钻与导航
+    // 目录树下钻导航逻辑
     function navigateTo(path) {
-      currentNavPath = path.trim().replace(/^\\/+|\\/+$/g, '');
-      // 清空单次搜索以便聚焦在当前目录
+      currentNavPath = path.trim().replace(/^\/+|\/+$/g, '');
       const searchBox = document.getElementById('search-box');
       if (searchBox.value) {
         searchBox.value = '';
+        document.getElementById('btn-clear-search').classList.add('hidden');
       }
       filterSkills();
     }
@@ -536,9 +611,9 @@ HTML_PAGE = """<!DOCTYPE html>
         backBtn.classList.remove('hidden');
         selectCurBtn.classList.add('hidden');
         trail.innerHTML = `
-          <span class="text-slate-400">🔍 全局搜索:</span>
-          <span class="font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded font-mono">"${searchKeyword}"</span>
-          <button onclick="clearSearch()" class="text-slate-400 hover:text-slate-600 text-xs ml-2 underline">退出搜索</button>
+          <span class="text-slate-400">🔍 全局搜索匹配:</span>
+          <span class="font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md font-mono">"${searchKeyword}"</span>
+          <button onclick="clearSearch()" class="text-slate-400 hover:text-slate-700 text-xs ml-2 underline">退出搜索</button>
         `;
         return;
       }
@@ -547,8 +622,8 @@ HTML_PAGE = """<!DOCTYPE html>
         backBtn.classList.add('hidden');
         selectCurBtn.classList.add('hidden');
         trail.innerHTML = `
-          <span class="font-semibold text-slate-800 flex items-center gap-1">
-            <span>🏠</span> 根目录 (所有顶级分类)
+          <span class="font-bold text-slate-900 flex items-center gap-1.5">
+            <span>🏠</span> 根目录 (顶级分类目录)
           </span>
         `;
         return;
@@ -559,7 +634,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
       const parts = currentNavPath.split('/');
       let html = `
-        <button onclick="navigateTo('')" class="text-indigo-600 hover:underline flex items-center gap-1 font-medium">
+        <button onclick="navigateTo('')" class="text-indigo-600 hover:underline flex items-center gap-1 font-semibold">
           <span>🏠</span> 根目录
         </button>
       `;
@@ -571,7 +646,7 @@ HTML_PAGE = """<!DOCTYPE html>
         if (isLast) {
           html += `
             <span class="text-slate-300">/</span>
-            <span class="font-semibold text-slate-800 font-mono flex items-center gap-1">
+            <span class="font-bold text-slate-900 font-mono flex items-center gap-1">
               <span>📁</span> ${p}
             </span>
           `;
@@ -591,13 +666,12 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function clearSearch() {
       document.getElementById('search-box').value = '';
+      document.getElementById('btn-clear-search').classList.add('hidden');
       filterSkills();
     }
 
     function selectCurrentDirSkills(checked) {
-      // 勾选当前路径下的全部技能（含子孙技能）
       const prefix = currentNavPath ? (currentNavPath + '/') : '';
-      const checkboxes = document.querySelectorAll('.skill-checkbox');
       currentSkills.forEach(s => {
         const fp = s.folder_path || '';
         if (fp === currentNavPath || fp.startsWith(prefix)) {
@@ -605,6 +679,7 @@ HTML_PAGE = """<!DOCTYPE html>
           if (cb) cb.checked = checked;
         }
       });
+      updateSelectedCounter();
     }
 
     function selectSubFolderSkills(subPath, checked) {
@@ -616,6 +691,7 @@ HTML_PAGE = """<!DOCTYPE html>
           if (cb) cb.checked = checked;
         }
       });
+      updateSelectedCounter();
     }
 
     async function loadSkills() {
@@ -626,37 +702,55 @@ HTML_PAGE = """<!DOCTYPE html>
       filterSkills();
     }
 
+    function updateSelectedCounter() {
+      const count = document.querySelectorAll('.skill-checkbox:checked').length;
+      document.getElementById('selected-counter-badge').textContent = count;
+    }
+
+    function selectAll(checked) {
+      document.querySelectorAll('.skill-checkbox').forEach(cb => cb.checked = checked);
+      updateSelectedCounter();
+    }
+
+    // 单张技能卡片 UI 渲染 (设计优化)
     function renderSingleSkillCard(s, showPathBadge = false) {
       return `
-        <div class="skill-card bg-white p-3.5 rounded-xl border ${s.installed ? 'border-indigo-300 bg-indigo-50/15' : 'border-slate-200'} shadow-2xs hover:shadow-xs transition relative flex flex-col justify-between" data-name="${s.name}" data-desc="${s.desc}" data-source="${s.source_id}">
+        <div class="skill-card bg-white p-4 rounded-2xl border ${s.installed ? 'border-indigo-300/80 bg-indigo-50/15' : 'border-slate-200/90'} shadow-xs hover:shadow-md transition-all relative flex flex-col justify-between" data-name="${s.name}" data-desc="${s.desc}" data-source="${s.source_id}">
           <div>
-            <div class="flex items-start justify-between gap-2 mb-1">
-              <span class="font-semibold text-xs text-slate-900 truncate" title="${s.name}">${s.name}</span>
-              <span class="text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0 ${s.installed ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}">
-                ${s.installed ? '已挂载' : '未安装'}
+            <!-- Header Row -->
+            <div class="flex items-start justify-between gap-2.5 mb-1.5">
+              <span class="font-bold text-xs text-slate-900 truncate font-mono" title="${s.name}">${s.name}</span>
+              <span class="text-[10px] px-2 py-0.5 rounded-full font-semibold shrink-0 ${s.installed ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}">
+                ${s.installed ? '✓ 已挂载' : '未挂载'}
               </span>
             </div>
-            <div class="text-[11px] text-indigo-600 font-medium mb-2 flex items-center gap-1.5 flex-wrap">
-              <span class="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded text-[10px] font-mono border border-indigo-100">🏷️ ${s.source_name}</span>
-              <button onclick="selectTag('${s.tag}')" class="bg-amber-50 hover:bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded text-[10px] font-mono border border-amber-200 cursor-pointer transition" title="所属直接目录名: ${s.tag}">🏷️ ${s.tag}</button>
-              ${showPathBadge && s.folder_path ? `<button onclick="navigateTo('${s.folder_path}')" class="bg-slate-100 hover:bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded text-[10px] font-mono transition" title="点击进入此所在目录">📂 ${s.folder_path}</button>` : ''}
+
+            <!-- Tags & Badges -->
+            <div class="text-[11px] font-medium mb-2.5 flex items-center gap-1.5 flex-wrap">
+              <span class="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md text-[10px] font-mono border border-indigo-100">🏷️ ${s.source_name}</span>
+              <button onclick="selectTag('${s.tag}')" class="bg-amber-50 hover:bg-amber-100 text-amber-800 px-2 py-0.5 rounded-md text-[10px] font-mono border border-amber-200 cursor-pointer transition" title="所属目录名: ${s.tag}">📂 ${s.tag}</button>
+              ${showPathBadge && s.folder_path ? `<button onclick="navigateTo('${s.folder_path}')" class="bg-slate-100 hover:bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded text-[10px] font-mono transition" title="进入所在目录">📍 ${s.folder_path}</button>` : ''}
             </div>
-            <p class="text-[11px] text-slate-500 line-clamp-2 leading-relaxed mb-3" title="${s.desc}">${s.desc}</p>
+
+            <!-- Description -->
+            <p class="text-xs text-slate-500 line-clamp-2 leading-relaxed mb-3" title="${s.desc}">${s.desc}</p>
           </div>
+
           <div>
             <!-- Install Target Info -->
-            <div class="p-1.5 bg-slate-50 rounded-lg border border-slate-100 text-[10px] text-slate-600 mb-2.5 flex items-center justify-between gap-2">
-              <div class="truncate flex items-center gap-1" title="目标路径: ${s.effective_install_to}">
-                <span class="text-slate-400 shrink-0">${s.is_custom ? '专属:' : '默认:'}</span>
-                <span class="font-mono text-slate-700 truncate">${s.effective_install_to}</span>
+            <div class="p-2 bg-slate-50 rounded-xl border border-slate-100 text-[11px] text-slate-600 mb-3 flex items-center justify-between gap-2">
+              <div class="truncate flex items-center gap-1" title="目标挂载路径: ${s.effective_install_to}">
+                <span class="text-slate-400 shrink-0 font-medium">${s.is_custom ? '专属目录:' : '默认目录:'}</span>
+                <span class="font-mono text-[10px] text-slate-700 truncate">${s.effective_install_to}</span>
               </div>
-              <button onclick="openPathModal('${s.name}', '${s.custom_install_to || ''}')" class="text-indigo-600 hover:text-indigo-800 shrink-0 font-medium hover:underline">修改</button>
+              <button onclick="openPathModal('${s.name}', '${s.custom_install_to || ''}')" class="text-indigo-600 hover:text-indigo-800 shrink-0 font-semibold hover:underline">修改</button>
             </div>
+
             <!-- Action Bar -->
-            <div class="pt-2 border-t border-slate-100 flex items-center justify-between">
-              <label class="flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer select-none">
-                <input type="checkbox" class="skill-checkbox rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5" value="${s.name}" ${s.installed ? 'checked' : ''}>
-                <span class="text-xs">启用并安装</span>
+            <div class="pt-2.5 border-t border-slate-100 flex items-center justify-between">
+              <label class="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none font-medium">
+                <input type="checkbox" onchange="updateSelectedCounter()" class="skill-checkbox rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 transition" value="${s.name}" ${s.installed ? 'checked' : ''}>
+                <span>启用挂载</span>
               </label>
             </div>
           </div>
@@ -666,40 +760,47 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function renderSkills(skills) {
       const container = document.getElementById('skills-container');
-      const q = document.getElementById('search-box').value.trim();
+      const searchBox = document.getElementById('search-box');
+      const q = searchBox.value.trim();
       const isSearching = Boolean(q);
+
+      // 控制清除按钮显示
+      document.getElementById('btn-clear-search').classList.toggle('hidden', !isSearching);
 
       renderBreadcrumbs(isSearching, q);
 
-      document.getElementById('skill-count').textContent = `共 ${skills.length} 个技能`;
+      document.getElementById('skill-count').textContent = `${skills.length} 个技能`;
       if (skills.length === 0) {
-        container.innerHTML = `<div class="py-16 text-center text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">未扫描到匹配条件的技能包</div>`;
+        container.innerHTML = `
+          <div class="py-20 text-center text-slate-400 bg-white rounded-2xl border border-dashed border-slate-200">
+            未发现符合条件的技能包
+          </div>
+        `;
+        updateSelectedCounter();
         return;
       }
 
-      // 如果处于全局平铺模式，或者正在全局搜索中：平铺展示
+      // 全局平铺视图 或 全局搜索结果视图
       if (currentViewMode === 'grid' || isSearching) {
         container.innerHTML = `
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             ${skills.map(s => renderSingleSkillCard(s, isSearching)).join('')}
           </div>
         `;
+        updateSelectedCounter();
         return;
       }
 
-      // 核心交互：像文件树一样一层一层进入 (Folder Hierarchical Explorer)
-      // 计算当前 currentNavPath 层的直接子文件夹 与 直接归属技能
+      // 文件树逐层下钻视图 (Folder Hierarchical Drill-down)
       const prefix = currentNavPath ? (currentNavPath + '/') : '';
-      const subFolderMap = {}; // { subDirName: { fullPath: '...', totalSkills: N, installedCount: N } }
+      const subFolderMap = {};
       const directSkills = [];
 
       skills.forEach(s => {
         const fp = s.folder_path || '';
         if (fp === currentNavPath) {
-          // 直接属于当前层的技能
-          directSkills.append ? directSkills.append(s) : directSkills.push(s);
+          directSkills.push(s);
         } else if (fp.startsWith(prefix)) {
-          // 属于当前层的子目录
           const remainder = fp.substring(prefix.length);
           const firstSegment = remainder.split('/')[0];
           const fullChildPath = prefix + firstSegment;
@@ -715,31 +816,31 @@ HTML_PAGE = """<!DOCTYPE html>
 
       let contentHtml = '';
 
-      // 1. 渲染当前层的子文件夹列表（点击进入下一层）
+      // 1. 渲染当前层的子文件夹卡片 (点击进入下一级)
       if (subFolders.length > 0) {
         contentHtml += `
           <div>
-            <div class="text-xs font-semibold text-slate-700 mb-2.5 flex items-center justify-between">
-              <span class="flex items-center gap-1">
-                <span>📁 子目录列表</span>
-                <span class="text-slate-400 font-normal">(${subFolders.length} 个子文件夹，点击可进入下一级)</span>
+            <div class="text-xs font-bold text-slate-700 mb-3 flex items-center justify-between">
+              <span class="flex items-center gap-1.5">
+                <span>📁 子文件夹</span>
+                <span class="text-slate-400 font-normal">(${subFolders.length} 个，点击卡片进入下一级)</span>
               </span>
             </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mb-6">
+            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 mb-6">
               ${subFolders.map(f => `
-                <div onclick="navigateTo('${f.fullPath}')" class="bg-white hover:bg-indigo-50/50 p-3.5 rounded-xl border border-slate-200 hover:border-indigo-300 shadow-2xs transition cursor-pointer flex items-center justify-between group select-none">
-                  <div class="flex items-center gap-2.5 min-w-0">
-                    <span class="text-2xl group-hover:scale-110 transition-transform shrink-0">📁</span>
+                <div onclick="navigateTo('${f.fullPath}')" class="bg-white hover:bg-indigo-50/40 p-4 rounded-2xl border border-slate-200/90 hover:border-indigo-300 shadow-2xs hover:shadow-xs transition cursor-pointer flex items-center justify-between group select-none">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <span class="text-3xl group-hover:scale-110 transition-transform shrink-0">📁</span>
                     <div class="min-w-0">
-                      <div class="font-semibold text-xs text-slate-900 group-hover:text-indigo-600 truncate font-mono">${f.name}</div>
-                      <div class="text-[10px] text-slate-400 mt-0.5 truncate">
+                      <div class="font-bold text-xs text-slate-900 group-hover:text-indigo-600 truncate font-mono">${f.name}</div>
+                      <div class="text-[11px] text-slate-400 mt-0.5 truncate">
                         ${f.totalSkills} 个技能 ${f.installedCount > 0 ? `· <span class="text-emerald-600 font-medium">已挂载 ${f.installedCount}</span>` : ''}
                       </div>
                     </div>
                   </div>
                   <div class="flex items-center gap-1.5 shrink-0" onclick="event.stopPropagation()">
-                    <button onclick="selectSubFolderSkills('${f.fullPath}', true)" class="text-[10px] text-indigo-600 hover:bg-indigo-50 px-1.5 py-0.5 rounded transition" title="全选此目录下全部技能">全选</button>
-                    <span class="text-slate-300 group-hover:text-indigo-500 font-bold text-xs ml-1">→</span>
+                    <button onclick="selectSubFolderSkills('${f.fullPath}', true)" class="text-[10px] text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded-md font-semibold transition" title="勾选该目录下所有技能">全选</button>
+                    <span class="text-slate-300 group-hover:text-indigo-500 font-bold text-sm ml-1 transition">→</span>
                   </div>
                 </div>
               `).join('')}
@@ -748,17 +849,17 @@ HTML_PAGE = """<!DOCTYPE html>
         `;
       }
 
-      // 2. 渲染当前层包含的直属技能
+      // 2. 渲染当前目录直属技能
       if (directSkills.length > 0) {
         contentHtml += `
           <div>
-            <div class="text-xs font-semibold text-slate-700 mb-2.5 flex items-center justify-between">
-              <span class="flex items-center gap-1">
-                <span>📦 本级目录技能</span>
+            <div class="text-xs font-bold text-slate-700 mb-3 flex items-center justify-between">
+              <span class="flex items-center gap-1.5">
+                <span>📦 本目录包含技能</span>
                 <span class="text-slate-400 font-normal">(${directSkills.length} 个)</span>
               </span>
             </div>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               ${directSkills.map(s => renderSingleSkillCard(s, false)).join('')}
             </div>
           </div>
@@ -767,13 +868,14 @@ HTML_PAGE = """<!DOCTYPE html>
 
       if (subFolders.length === 0 && directSkills.length === 0) {
         contentHtml = `
-          <div class="py-16 text-center text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">
-            此目录下暂无技能。点击上方「⬅ 返回上一级」返回。
+          <div class="py-20 text-center text-slate-400 bg-white rounded-2xl border border-dashed border-slate-200">
+            该目录下暂无技能。点击上方「⬅ 返回上一级」返回。
           </div>
         `;
       }
 
       container.innerHTML = contentHtml;
+      updateSelectedCounter();
     }
 
     function filterSkills() {
@@ -796,48 +898,31 @@ HTML_PAGE = """<!DOCTYPE html>
       renderSkills(filtered);
     }
 
-    function filterSkills() {
-      const q = document.getElementById('search-box').value.toLowerCase();
-      const srcFilter = document.getElementById('source-filter').value;
-      const tagFilter = currentSelectedTag;
-
-      const filtered = currentSkills.filter(s => {
-        const matchSearch = s.name.toLowerCase().includes(q) 
-          || s.desc.toLowerCase().includes(q) 
-          || (s.tag && s.tag.toLowerCase().includes(q))
-          || (s.folder_path && s.folder_path.toLowerCase().includes(q));
-
-        const matchSrc = (srcFilter === 'all') || (s.source_id === srcFilter);
-        const matchTag = (tagFilter === 'all') || (s.tag === tagFilter);
-
-        return matchSearch && matchSrc && matchTag;
-      });
-      renderSkills(filtered);
+    // Toast 浮动轻提示
+    function showToast(msg, isError = false) {
+      const t = document.getElementById('toast');
+      const icon = document.getElementById('toast-icon');
+      const text = document.getElementById('toast-msg');
+      icon.textContent = isError ? '❌' : '✨';
+      text.textContent = msg;
+      t.className = `fixed bottom-6 right-6 z-50 px-4 py-3 text-xs font-medium rounded-2xl shadow-xl border flex items-center gap-2.5 transition-all ${isError ? 'bg-rose-900 border-rose-700 text-white' : 'bg-slate-900 border-slate-700 text-white'}`;
+      t.classList.remove('hidden');
+      setTimeout(() => { t.classList.add('hidden'); }, 3000);
     }
 
-    function selectAll(checked) {
-      document.querySelectorAll('.skill-checkbox').forEach(cb => cb.checked = checked);
-    }
-
-    function showStatus(msg, isError = false) {
-      const box = document.getElementById('status-box');
-      box.textContent = msg;
-      box.className = `p-3 rounded-lg text-xs ${isError ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`;
-      box.classList.remove('hidden');
-    }
-
+    // Save Default Install Path
     async function saveDefaultInstallPath() {
       const path = document.getElementById('cfg-default-install').value.trim();
-      const res = await fetch('/api/config', {
+      await fetch('/api/config', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ default_install_to: path })
       });
-      showStatus('默认安装路径已更新并保存！');
+      showToast('全局默认安装路径已更新！');
       loadSkills();
     }
 
-    // Modal Operations for Sources
+    // Source Modal Operations
     function openSourceModal(source = null) {
       document.getElementById('modal-src-id').value = source ? source.id : '';
       document.getElementById('modal-src-name').value = source ? source.name : '';
@@ -871,7 +956,7 @@ HTML_PAGE = """<!DOCTYPE html>
         return;
       }
       closeSourceModal();
-      showStatus(`正在拉取仓库 [${src.name}] 分支 [${src.branch}]，请稍候...`);
+      showToast(`正在拉取仓库 [${src.name}] 分支 [${src.branch}]，请稍候...`);
 
       const res = await fetch('/api/sources/save', {
         method: 'POST',
@@ -880,28 +965,28 @@ HTML_PAGE = """<!DOCTYPE html>
       });
       const data = await res.json();
       if (data.ok) {
-        showStatus(`仓库 [${src.name}] 保存并拉取成功！`);
+        showToast(`仓库 [${src.name}] 保存并拉取成功！`);
         await loadConfig();
         await loadSkills();
       } else {
-        showStatus('仓库拉取失败: ' + data.error, true);
+        showToast('仓库拉取失败: ' + data.error, true);
       }
     }
 
     async function deleteSource(id) {
       if (!confirm('确定要移除此 Git 仓库源吗？')) return;
-      const res = await fetch('/api/sources/delete', {
+      await fetch('/api/sources/delete', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ id })
       });
-      showStatus('仓库源已移除。');
+      showToast('仓库源已移除。');
       await loadConfig();
       await loadSkills();
     }
 
     async function pullSingleSource(id) {
-      showStatus(`正在更新仓库源 [${id}]...`);
+      showToast(`正在拉取更新...`);
       const res = await fetch('/api/pull', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -909,22 +994,22 @@ HTML_PAGE = """<!DOCTYPE html>
       });
       const data = await res.json();
       if (data.ok) {
-        showStatus('仓库更新成功！');
+        showToast('仓库拉取更新成功！');
         loadSkills();
       } else {
-        showStatus('更新失败: ' + data.error, true);
+        showToast('更新失败: ' + data.error, true);
       }
     }
 
     async function pullAllSources() {
-      showStatus('正在批量拉取/更新所有 Git 仓库源...');
+      showToast('正在批量更新所有 Git 仓库源...');
       const res = await fetch('/api/pull_all', { method: 'POST' });
       const data = await res.json();
       if (data.ok) {
-        showStatus('所有 Git 仓库源已更新至最新！');
+        showToast('所有仓库源均已拉取至最新！');
         loadSkills();
       } else {
-        showStatus('拉取更新遇到问题: ' + data.error, true);
+        showToast('拉取存在错误: ' + data.error, true);
       }
     }
 
@@ -948,7 +1033,7 @@ HTML_PAGE = """<!DOCTYPE html>
         body: JSON.stringify({ skill_name: currentEditingSkill, install_to: customPath })
       });
       closePathModal();
-      showStatus(`技能 [${currentEditingSkill}] 安装路径配置已更新。`);
+      showToast(`技能 [${currentEditingSkill}] 专属安装路径已生效。`);
       await loadConfig();
       await loadSkills();
     }
@@ -961,7 +1046,7 @@ HTML_PAGE = """<!DOCTYPE html>
     // Sync Selected
     async function syncSelected() {
       const selected = Array.from(document.querySelectorAll('.skill-checkbox:checked')).map(c => c.value);
-      showStatus('正在执行符号链接同步...');
+      showToast('正在执行目录联结挂载同步...');
       const res = await fetch('/api/sync', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -969,10 +1054,10 @@ HTML_PAGE = """<!DOCTYPE html>
       });
       const data = await res.json();
       if (data.ok) {
-        showStatus(`同步完成！当前已启用挂载 ${data.installed} 个技能。`);
+        showToast(`挂载同步完成！当前已成功启用 ${data.installed} 个技能。`);
         loadSkills();
       } else {
-        showStatus('同步失败: ' + data.error, true);
+        showToast('挂载同步失败: ' + data.error, true);
       }
     }
 
@@ -1030,7 +1115,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             src_id = data.get("id")
             sources = cfg.get("sources", [])
 
-            # 替换或新增
             found = False
             for i, s in enumerate(sources):
                 if s["id"] == src_id:
@@ -1042,7 +1126,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             cfg["sources"] = sources
             save_config(cfg)
 
-            # 自动拉取该仓库
             try:
                 pull_single_source(data)
                 self.send_response(200)
@@ -1060,7 +1143,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             src_id = data.get("id")
             cfg["sources"] = [s for s in cfg.get("sources", []) if s["id"] != src_id]
             save_config(cfg)
-            # 可选：清理缓存
             cache_dir = CACHE_BASE_DIR / src_id
             if cache_dir.exists():
                 shutil.rmtree(cache_dir, ignore_errors=True)
@@ -1132,7 +1214,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             overrides = cfg.get("skill_overrides", {})
 
             try:
-                # 遍历所有可用 skills
                 installed_count = 0
                 for s in all_skills:
                     name = s["name"]
@@ -1142,13 +1223,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                     target_dir.mkdir(parents=True, exist_ok=True)
                     target_link = target_dir / name
 
-                    # 同时也需要检查是否之前安装在 default_dir（若之前改了路径）
                     alt_dirs = [default_dir]
                     if custom_path:
                         alt_dirs.append(Path(custom_path).expanduser())
 
                     if name in selected:
-                        # 确保 target_link 正确挂载
                         if not target_link.exists():
                             if sys.platform == "win32":
                                 subprocess.run(["cmd", "/c", "mklink", "/J", str(target_link), str(source_path)], check=True, stdout=subprocess.DEVNULL)
@@ -1156,7 +1235,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                                 target_link.symlink_to(source_path)
                         installed_count += 1
                     else:
-                        # 从所有可能的目标目录中卸载
                         for ad in alt_dirs:
                             al = ad / name
                             if al.exists():
