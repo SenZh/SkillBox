@@ -118,6 +118,40 @@ def pull_single_source(src):
         git_cmd(["checkout", branch], cwd=cache_dir)
         git_cmd(["pull", "origin", branch], cwd=cache_dir)
 
+    # 记录最新更新时间
+    now = time.time()
+    src["last_pulled_ts"] = now
+    src["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+
+def auto_update_scheduler():
+    """后台常驻守护线程：按各仓库配置的定时频率自动拉取更新"""
+    while True:
+        try:
+            time.sleep(30) # 每 30 秒巡检一次
+            cfg = load_config()
+            sources = cfg.get("sources", [])
+            now = time.time()
+            updated_any = False
+
+            for s in sources:
+                interval_min = int(s.get("auto_update_interval", 0))
+                if interval_min > 0:
+                    last_ts = float(s.get("last_pulled_ts", 0))
+                    # 达到定时周期触发 pull
+                    if now - last_ts >= interval_min * 60:
+                        try:
+                            print(f"[*] [Auto-Update] 触发仓库 [{s.get('name')}] 自动拉取更新...", flush=True)
+                            pull_single_source(s)
+                            updated_any = True
+                            print(f"[✓] [Auto-Update] 仓库 [{s.get('name')}] 自动更新成功，已挂载软链接实时生效！", flush=True)
+                        except Exception as e:
+                            print(f"[!] [Auto-Update] 仓库 [{s.get('name')}] 自动更新失败: {e}", flush=True)
+
+            if updated_any:
+                save_config(cfg)
+        except Exception as e:
+            pass
+
 def scan_all_skills(cfg):
     sources = cfg.get("sources", [])
     default_install_to = Path(cfg.get("default_install_to", "")).expanduser()
@@ -370,6 +404,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <input id="modal-src-subdir" type="text" placeholder="如: skills 或 . (根目录)" class="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
           </div>
         </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1.5">定时自动更新频率 (后台自动 Git Pull)</label>
+          <select id="modal-src-interval" class="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-700 font-medium">
+            <option value="0">关闭自动更新 (仅手动更新)</option>
+            <option value="30">每 30 分钟自动拉取</option>
+            <option value="60" selected>每 1 小时自动拉取 (推荐)</option>
+            <option value="360">每 6 小时自动拉取</option>
+            <option value="720">每 12 小时自动拉取</option>
+            <option value="1440">每 24 小时自动拉取</option>
+          </select>
+          <p class="text-[11px] text-slate-400 mt-1">更新完成后，由于采用符号链接机制，目标安装目录内的 Skill 代码将全自动实时变为最新版。</p>
+        </div>
       </div>
       <div class="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2.5">
         <button onclick="closeSourceModal()" class="px-4 py-2 text-xs text-slate-600 hover:bg-slate-200/80 rounded-xl font-medium transition">取消</button>
@@ -465,31 +511,51 @@ HTML_PAGE = r"""<!DOCTYPE html>
         `;
         return;
       }
-      el.innerHTML = sources.map(s => `
-        <div class="p-4 bg-slate-50/60 hover:bg-white border border-slate-200/80 hover:border-slate-300 rounded-2xl transition shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div class="min-w-0 flex-1 space-y-1">
-            <div class="flex items-center gap-2 flex-wrap">
-              <span class="font-bold text-sm text-slate-900">${s.name || '未命名'}</span>
-              <span class="text-[10px] px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100 font-mono font-semibold">分支: ${s.branch || 'main'}</span>
-              <span class="text-[10px] px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 font-mono">子目录: ${s.sub_dir || '.'}</span>
+
+      const intervalTextMap = {
+        0: '仅手动更新',
+        30: '每 30 分钟',
+        60: '每 1 小时',
+        360: '每 6 小时',
+        720: '每 12 小时',
+        1440: '每 24 小时'
+      };
+
+      el.innerHTML = sources.map(s => {
+        const intervalVal = parseInt(s.auto_update_interval || 60);
+        const intervalLabel = intervalTextMap[intervalVal] || `每 ${intervalVal} 分钟`;
+        const lastUpdated = s.last_updated ? s.last_updated : '尚未更新';
+
+        return `
+          <div class="p-4 bg-slate-50/60 hover:bg-white border border-slate-200/80 hover:border-slate-300 rounded-2xl transition shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div class="min-w-0 flex-1 space-y-1.5">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="font-bold text-sm text-slate-900">${s.name || '未命名'}</span>
+                <span class="text-[10px] px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100 font-mono font-semibold">分支: ${s.branch || 'main'}</span>
+                <span class="text-[10px] px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 font-mono">子目录: ${s.sub_dir || '.'}</span>
+                <span class="text-[10px] px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 font-mono font-medium">🕒 定时更新: ${intervalLabel}</span>
+              </div>
+              <div class="text-xs text-slate-400 font-mono truncate select-all" title="${s.git_url}">
+                ${s.git_url}
+              </div>
+              <div class="text-[11px] text-slate-400 flex items-center gap-2">
+                <span>上次拉取更新: <span class="text-slate-600 font-mono font-medium">${lastUpdated}</span></span>
+              </div>
             </div>
-            <div class="text-xs text-slate-400 font-mono truncate select-all" title="${s.git_url}">
-              ${s.git_url}
+            <div class="flex items-center gap-2 shrink-0 self-end md:self-auto">
+              <button onclick="pullSingleSource('${s.id}')" class="px-3 py-1.5 text-xs bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl font-medium transition shadow-2xs flex items-center gap-1 active:scale-98">
+                <span>🔄</span> 更新
+              </button>
+              <button onclick="editSource('${s.id}')" class="px-3 py-1.5 text-xs bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl font-medium transition shadow-2xs flex items-center gap-1 active:scale-98">
+                <span>✏️</span> 编辑
+              </button>
+              <button onclick="deleteSource('${s.id}')" class="px-3 py-1.5 text-xs bg-white hover:bg-rose-50 text-rose-600 border border-slate-200 rounded-xl font-medium transition shadow-2xs flex items-center gap-1 active:scale-98">
+                <span>🗑️</span> 移除
+              </button>
             </div>
           </div>
-          <div class="flex items-center gap-2 shrink-0 self-end md:self-auto">
-            <button onclick="pullSingleSource('${s.id}')" class="px-3 py-1.5 text-xs bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl font-medium transition shadow-2xs flex items-center gap-1 active:scale-98">
-              <span>🔄</span> 更新
-            </button>
-            <button onclick="editSource('${s.id}')" class="px-3 py-1.5 text-xs bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl font-medium transition shadow-2xs flex items-center gap-1 active:scale-98">
-              <span>✏️</span> 编辑
-            </button>
-            <button onclick="deleteSource('${s.id}')" class="px-3 py-1.5 text-xs bg-white hover:bg-rose-50 text-rose-600 border border-slate-200 rounded-xl font-medium transition shadow-2xs flex items-center gap-1 active:scale-98">
-              <span>🗑️</span> 移除
-            </button>
-          </div>
-        </div>
-      `).join('');
+        `;
+      }).join('');
     }
 
     function updateSourceFilterOptions(sources) {
@@ -913,13 +979,21 @@ HTML_PAGE = r"""<!DOCTYPE html>
     // Save Default Install Path
     async function saveDefaultInstallPath() {
       const path = document.getElementById('cfg-default-install').value.trim();
-      await fetch('/api/config', {
+      const res = await fetch('/api/config', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ default_install_to: path })
       });
-      showToast('全局默认安装路径已更新！');
-      loadSkills();
+      const data = await res.json();
+      if (data.ok) {
+        if (data.migrated > 0) {
+          showToast(`默认目录已更新，并自动将 ${data.migrated} 个已安装技能迁移挂载至新目录！`);
+        } else {
+          showToast('全局默认安装路径已更新保存！');
+        }
+        await loadConfig();
+        await loadSkills();
+      }
     }
 
     // Source Modal Operations
@@ -929,6 +1003,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       document.getElementById('modal-src-url').value = source ? source.git_url : '';
       document.getElementById('modal-src-branch').value = source ? source.branch : 'main';
       document.getElementById('modal-src-subdir').value = source ? source.sub_dir : 'skills';
+      document.getElementById('modal-src-interval').value = source ? (source.auto_update_interval ?? 60) : '60';
       document.getElementById('modal-title').textContent = source ? '编辑 Git 仓库源' : '添加 Git 仓库源';
       document.getElementById('source-modal').classList.remove('hidden');
     }
@@ -944,12 +1019,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
     async function saveSourceModal() {
       const id = document.getElementById('modal-src-id').value;
+      const existing = globalConfig.sources.find(s => s.id === id) || {};
       const src = {
+        ...existing,
         id: id || ('src-' + Date.now()),
         name: document.getElementById('modal-src-name').value.trim() || '未命名仓库',
         git_url: document.getElementById('modal-src-url').value.trim(),
         branch: document.getElementById('modal-src-branch').value.trim() || 'main',
-        sub_dir: document.getElementById('modal-src-subdir').value.trim() || 'skills'
+        sub_dir: document.getElementById('modal-src-subdir').value.trim() || 'skills',
+        auto_update_interval: parseInt(document.getElementById('modal-src-interval').value || 60)
       };
       if (!src.git_url) {
         alert('请填写 Git 仓库 URL');
@@ -966,6 +1044,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
       const data = await res.json();
       if (data.ok) {
         showToast(`仓库 [${src.name}] 保存并拉取成功！`);
+        await loadConfig();
+        await loadSkills();
+      } else {
+        showToast('仓库拉取失败: ' + data.error, true);
+      }
+    }
         await loadConfig();
         await loadSkills();
       } else {
@@ -1102,13 +1186,53 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if url.path == "/api/config":
             cfg = load_config()
+            old_default = cfg.get("default_install_to", "").strip()
+            new_default = data.get("default_install_to", "").strip()
+            migrated_count = 0
+
+            # 如果默认目录发生变更，执行已安装软链接的自动迁移重建
+            if new_default and old_default and new_default != old_default and Path(old_default).exists():
+                try:
+                    old_path = Path(old_default).expanduser()
+                    new_path = Path(new_default).expanduser()
+                    new_path.mkdir(parents=True, exist_ok=True)
+                    all_skills = scan_all_skills(cfg)
+                    overrides = cfg.get("skill_overrides", {})
+
+                    for s in all_skills:
+                        name = s["name"]
+                        # 仅迁移没有配置自定义专属路径的技能
+                        if not overrides.get(name):
+                            old_link = old_path / name
+                            if old_link.exists():
+                                # 1. 卸载旧软链接
+                                if old_link.is_symlink():
+                                    old_link.unlink()
+                                elif old_link.is_dir():
+                                    if sys.platform == "win32":
+                                        subprocess.run(["cmd", "/c", "rmdir", str(old_link)], check=True, stdout=subprocess.DEVNULL)
+                                    else:
+                                        shutil.rmtree(old_link)
+
+                                # 2. 在新目录下创建软链接
+                                new_link = new_path / name
+                                source_p = Path(s["source_path"])
+                                if not new_link.exists():
+                                    if sys.platform == "win32":
+                                        subprocess.run(["cmd", "/c", "mklink", "/J", str(new_link), str(source_p)], check=True, stdout=subprocess.DEVNULL)
+                                    else:
+                                        new_link.symlink_to(source_p)
+                                migrated_count += 1
+                except Exception as e:
+                    print(f"[!] 迁移软链接异常: {e}", flush=True)
+
             if "default_install_to" in data:
-                cfg["default_install_to"] = data["default_install_to"]
+                cfg["default_install_to"] = new_default
             save_config(cfg)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(b'{"ok": true}')
+            self.wfile.write(json.dumps({"ok": True, "migrated": migrated_count}).encode("utf-8"))
 
         elif url.path == "/api/sources/save":
             cfg = load_config()
@@ -1277,6 +1401,9 @@ def main():
     url = f"http://127.0.0.1:{actual_port}"
     print(f"[*] SkillBox 服务已成功启动: {url}", flush=True)
     print(f"[*] 提示：按 Ctrl+C 可停止服务。", flush=True)
+
+    # 启动定时自动更新后台守护线程
+    threading.Thread(target=auto_update_scheduler, daemon=True).start()
 
     def delayed_open():
         time.sleep(0.6)
