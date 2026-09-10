@@ -10,6 +10,7 @@ from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
+__version__ = "0.1.0"
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "config.json"
 CACHE_BASE_DIR = BASE_DIR / ".skillbox_cache"
@@ -251,7 +252,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div class="flex items-center gap-2.5 shrink-0 cursor-pointer" onclick="switchPage('skills')">
           <span class="text-2xl">📦</span>
           <span class="font-bold text-lg text-slate-900 tracking-tight">SkillBox</span>
-          <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100 font-mono font-medium">v2.0</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100 font-mono font-medium">v0.1</span>
         </div>
 
         <!-- 页面 Tab 切换导航 -->
@@ -1394,7 +1395,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     if name in selected:
                         if not target_link.exists():
                             if sys.platform == "win32":
-                                subprocess.run(["cmd", "/c", "mklink", "/J", f'"{str(target_link)}"', f'"{str(source_path)}"'], check=True, stdout=subprocess.DEVNULL)
+                                subprocess.run(["cmd", "/c", "mklink", "/J", str(target_link), str(source_path)], check=True, stdout=subprocess.DEVNULL)
                             else:
                                 target_link.symlink_to(source_path)
                         installed_count += 1
@@ -1412,6 +1413,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode("utf-8"))
+
+PID_FILE = BASE_DIR / ".skillbox.pid"
 
 def main():
     base_port = 7860
@@ -1435,6 +1438,12 @@ def main():
     print(f"[*] SkillBox 服务已成功启动: {url}", flush=True)
     print(f"[*] 提示：按 Ctrl+C 可停止服务。", flush=True)
 
+    # 写入当前进程 PID 和实际监听端口
+    try:
+        PID_FILE.write_text(f"{os.getpid()}:{actual_port}", encoding="utf-8")
+    except Exception:
+        pass
+
     # 启动定时自动更新后台守护线程
     threading.Thread(target=auto_update_scheduler, daemon=True).start()
 
@@ -1448,6 +1457,12 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n[!] SkillBox 服务已安全退出。", flush=True)
+    finally:
+        if PID_FILE.exists():
+            try:
+                PID_FILE.unlink()
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     main()
