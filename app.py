@@ -14,6 +14,18 @@ __version__ = "0.1.0"
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "config.json"
 CACHE_BASE_DIR = BASE_DIR / ".skillbox_cache"
+LOG_FILE = BASE_DIR / "skillbox.log"
+
+def log(msg, level="INFO"):
+    """记录运行日志并同时输出到标准输出与 skillbox.log 文件"""
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] [{level}] {msg}"
+    print(line, flush=True)
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 DEFAULT_CONFIG = {
     "default_install_to": str(Path.home() / ".agents" / "skills"),
@@ -1435,6 +1447,18 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"enabled": status, "platform": sys.platform}).encode("utf-8"))
+        elif url.path == "/api/logs":
+            lines = []
+            if LOG_FILE.exists():
+                try:
+                    all_lines = LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+                    lines = all_lines[-100:]
+                except Exception:
+                    pass
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"logs": lines}).encode("utf-8"))
         else:
             self.send_response(404)
             self.end_headers()
@@ -1658,39 +1682,57 @@ class RequestHandler(BaseHTTPRequestHandler):
             selected = set(data.get("selected", []))
             all_skills = scan_all_skills(cfg)
             default_dir = Path(cfg.get("default_install_to", "")).expanduser()
-            overrides = cfg.get("skill_overrides", {})
+
+            # 汇总该项目涉及的所有潜在安装目录，以便在路径变更或取消挂载时彻底安全解绑
+            all_possible_target_dirs = {default_dir}
+            for fo_val in cfg.get("folder_overrides", {}).values():
+                if fo_val.strip():
+                    all_possible_target_dirs.add(Path(fo_val.strip()).expanduser())
+            for so_val in cfg.get("skill_overrides", {}).values():
+                if so_val.strip():
+                    all_possible_target_dirs.add(Path(so_val.strip()).expanduser())
 
             try:
                 installed_count = 0
                 for s in all_skills:
                     name = s["name"]
                     source_path = Path(s["source_path"])
-                    custom_path = overrides.get(name, "").strip()
-                    target_dir = Path(custom_path).expanduser() if custom_path else default_dir
-                    target_dir.mkdir(parents=True, exist_ok=True)
-                    target_link = target_dir / name
-
-                    alt_dirs = [default_dir]
-                    if custom_path:
-                        alt_dirs.append(Path(custom_path).expanduser())
+                    # 精准使用继承自目录或单技能计算出的 effective_install_to！
+                    effective_dir = Path(s["effective_install_to"]).expanduser()
+                    target_link = effective_dir / name
 
                     if name in selected:
+                        # 1. 如果该技能安装在专有目录（如 infra），清理全局默认目录或历史目录中的旧软链接残留
+                        for old_d in all_possible_target_dirs:
+                            if old_d != effective_dir:
+                                old_link = old_d / name
+                                if old_link.exists():
+                                    safe_remove_link(old_link)
+                                    log(f"[Clean] 清理旧挂载链接: {old_link}")
+
+                        # 2. 挂载到当前精准生效目录
+                        effective_dir.mkdir(parents=True, exist_ok=True)
                         if not target_link.exists():
                             if sys.platform == "win32":
                                 subprocess.run(["cmd", "/c", "mklink", "/J", str(target_link), str(source_path)], check=True, stdout=subprocess.DEVNULL)
                             else:
                                 target_link.symlink_to(source_path)
+                            log(f"[Mount] 成功挂载技能: {name} -> {target_link}")
                         installed_count += 1
                     else:
-                        for ad in alt_dirs:
-                            al = ad / name
-                            safe_remove_link(al)
+                        # 取消挂载：从所有可能目录中彻底解绑
+                        for d in all_possible_target_dirs:
+                            al = d / name
+                            if al.exists():
+                                safe_remove_link(al)
+                                log(f"[Unmount] 解除挂载技能: {name} 从 {al}")
 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"ok": True, "installed": installed_count}).encode("utf-8"))
             except Exception as e:
+                log(f"同步挂载异常: {e}", level="ERROR")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()

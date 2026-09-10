@@ -215,6 +215,22 @@ def cmd_autostart(action):
         print("用法: skillbox autostart on / off")
     return 0
 
+def cmd_log(lines_count=50):
+    log_file = BASE_DIR / "skillbox.log"
+    if not log_file.exists():
+        print("[*] 暂无运行日志文件 (skillbox.log)。启动服务后将自动记录日志。")
+        return 0
+    try:
+        content = log_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+        print(f"=== SkillBox 最近运行日志 ({min(len(content), lines_count)} 行) ===")
+        for line in content[-lines_count:]:
+            print(line)
+        print(f"=== 日志文件路径: {log_file} ===")
+        return 0
+    except Exception as e:
+        print(f"[!] 读取日志失败: {e}")
+        return 1
+
 def cmd_test():
     import run_tests
     return run_tests.run_all_tests()
@@ -233,6 +249,7 @@ SkillBox 统一命令行管理工具 (v0.1)
   skillbox update              触发所有 Git 仓库源增量拉取更新
   skillbox autostart [on/off]  设置或取消 Windows 开机静默自启动
   skillbox run                 前台直接运行服务 (用于排错调试查看日志)
+  skillbox log [N]             查看后台最近 N 行运行日志 (默认 50 行)
   skillbox test                运行全量自动化单元测试套件
   skillbox help                显示此帮助说明
 """)
@@ -254,6 +271,9 @@ def main():
         return cmd_status()
     elif cmd in ("open", "ui", "web"):
         return cmd_open()
+    elif cmd in ("log", "logs"):
+        count = int(args[1]) if len(args) > 1 and args[1].isdigit() else 50
+        return cmd_log(count)
     elif cmd in ("update", "pull", "sync"):
         return cmd_update()
     elif cmd in ("run", "dev"):
