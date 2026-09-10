@@ -63,6 +63,30 @@ def git_cmd(args, cwd=None):
         raise RuntimeError(err or f"Git command failed: {' '.join(args)}")
     return res.stdout.strip()
 
+def safe_remove_link(link_path: Path):
+    """安全解绑符号链接或 NTFS 目录联结 (Junction)，绝不误删物理源码文件"""
+    if not link_path.exists() and not link_path.is_symlink():
+        return
+    try:
+        if sys.platform == "win32":
+            # 在 Windows 上，os.rmdir 可以直接、安全地解绑并删除 NTFS Junction
+            try:
+                os.rmdir(link_path)
+            except OSError:
+                if link_path.is_symlink():
+                    link_path.unlink()
+                elif link_path.is_file():
+                    link_path.unlink()
+                else:
+                    subprocess.run(["cmd", "/c", "rmdir", f'"{str(link_path)}"'], check=True, stdout=subprocess.DEVNULL)
+        else:
+            if link_path.is_symlink() or link_path.is_file():
+                link_path.unlink()
+            elif link_path.is_dir():
+                shutil.rmtree(link_path)
+    except Exception as e:
+        print(f"[!] 解除挂载链接失败 {link_path}: {e}", flush=True)
+
 def parse_skill_metadata(skill_dir):
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.exists():
@@ -736,15 +760,40 @@ HTML_PAGE = r"""<!DOCTYPE html>
       filterSkills();
     }
 
+    let selectedSkills = new Set();
+
+    function updateSelectedCounter() {
+      document.getElementById('selected-counter-badge').textContent = selectedSkills.size;
+    }
+
+    function toggleSkill(skillName, checked) {
+      if (checked) {
+        selectedSkills.add(skillName);
+      } else {
+        selectedSkills.delete(skillName);
+      }
+      updateSelectedCounter();
+    }
+
+    function selectAll(checked) {
+      currentSkills.forEach(s => {
+        if (checked) selectedSkills.add(s.name);
+        else selectedSkills.delete(s.name);
+      });
+      filterSkills();
+      updateSelectedCounter();
+    }
+
     function selectCurrentDirSkills(checked) {
       const prefix = currentNavPath ? (currentNavPath + '/') : '';
       currentSkills.forEach(s => {
         const fp = s.folder_path || '';
         if (fp === currentNavPath || fp.startsWith(prefix)) {
-          const cb = document.querySelector(`.skill-checkbox[value="${s.name}"]`);
-          if (cb) cb.checked = checked;
+          if (checked) selectedSkills.add(s.name);
+          else selectedSkills.delete(s.name);
         }
       });
+      filterSkills();
       updateSelectedCounter();
     }
 
@@ -753,10 +802,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
       currentSkills.forEach(s => {
         const fp = s.folder_path || '';
         if (fp === subPath || fp.startsWith(prefix)) {
-          const cb = document.querySelector(`.skill-checkbox[value="${s.name}"]`);
-          if (cb) cb.checked = checked;
+          if (checked) selectedSkills.add(s.name);
+          else selectedSkills.delete(s.name);
         }
       });
+      filterSkills();
       updateSelectedCounter();
     }
 
@@ -764,22 +814,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
       const res = await fetch('/api/skills');
       const data = await res.json();
       currentSkills = data.skills || [];
+      
+      // 首次加载或同步后，将所有已挂载的 skills 记录在 selectedSkills 集合中
+      selectedSkills = new Set(currentSkills.filter(s => s.installed).map(s => s.name));
+      
       updateTagOptions(currentSkills);
       filterSkills();
-    }
-
-    function updateSelectedCounter() {
-      const count = document.querySelectorAll('.skill-checkbox:checked').length;
-      document.getElementById('selected-counter-badge').textContent = count;
-    }
-
-    function selectAll(checked) {
-      document.querySelectorAll('.skill-checkbox').forEach(cb => cb.checked = checked);
       updateSelectedCounter();
     }
 
     // 单张技能卡片 UI 渲染 (设计优化)
     function renderSingleSkillCard(s, showPathBadge = false) {
+      const isChecked = selectedSkills.has(s.name);
       return `
         <div class="skill-card bg-white p-4 rounded-2xl border ${s.installed ? 'border-indigo-300/80 bg-indigo-50/15' : 'border-slate-200/90'} shadow-xs hover:shadow-md transition-all relative flex flex-col justify-between" data-name="${s.name}" data-desc="${s.desc}" data-source="${s.source_id}">
           <div>
@@ -815,7 +861,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <!-- Action Bar -->
             <div class="pt-2.5 border-t border-slate-100 flex items-center justify-between">
               <label class="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none font-medium">
-                <input type="checkbox" onchange="updateSelectedCounter()" class="skill-checkbox rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 transition" value="${s.name}" ${s.installed ? 'checked' : ''}>
+                <input type="checkbox" onchange="toggleSkill('${s.name}', this.checked)" class="skill-checkbox rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 transition" value="${s.name}" ${isChecked ? 'checked' : ''}>
                 <span>启用挂载</span>
               </label>
             </div>
@@ -1050,12 +1096,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
         showToast('仓库拉取失败: ' + data.error, true);
       }
     }
-        await loadConfig();
-        await loadSkills();
-      } else {
-        showToast('仓库拉取失败: ' + data.error, true);
-      }
-    }
 
     async function deleteSource(id) {
       if (!confirm('确定要移除此 Git 仓库源吗？')) return;
@@ -1129,7 +1169,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
     // Sync Selected
     async function syncSelected() {
-      const selected = Array.from(document.querySelectorAll('.skill-checkbox:checked')).map(c => c.value);
+      const selected = Array.from(selectedSkills);
       showToast('正在执行目录联结挂载同步...');
       const res = await fetch('/api/sync', {
         method: 'POST',
@@ -1139,7 +1179,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       const data = await res.json();
       if (data.ok) {
         showToast(`挂载同步完成！当前已成功启用 ${data.installed} 个技能。`);
-        loadSkills();
+        await loadSkills();
       } else {
         showToast('挂载同步失败: ' + data.error, true);
       }
@@ -1354,21 +1394,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                     if name in selected:
                         if not target_link.exists():
                             if sys.platform == "win32":
-                                subprocess.run(["cmd", "/c", "mklink", "/J", str(target_link), str(source_path)], check=True, stdout=subprocess.DEVNULL)
+                                subprocess.run(["cmd", "/c", "mklink", "/J", f'"{str(target_link)}"', f'"{str(source_path)}"'], check=True, stdout=subprocess.DEVNULL)
                             else:
                                 target_link.symlink_to(source_path)
                         installed_count += 1
                     else:
                         for ad in alt_dirs:
                             al = ad / name
-                            if al.exists():
-                                if al.is_symlink():
-                                    al.unlink()
-                                elif al.is_dir():
-                                    if sys.platform == "win32":
-                                        subprocess.run(["cmd", "/c", "rmdir", str(al)], check=True, stdout=subprocess.DEVNULL)
-                                    else:
-                                        shutil.rmtree(al)
+                            safe_remove_link(al)
 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
