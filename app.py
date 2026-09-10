@@ -132,9 +132,17 @@ def scan_all_skills(cfg):
         if not sub_dir.exists():
             continue
 
-        for item in sorted(sub_dir.iterdir()):
-            if item.is_dir() and ((item / "SKILL.md").exists() or (item / "skill.md").exists()):
-                skill_name = item.name
+        # 深度递归扫描所有包含 SKILL.md 或 skill.md 的目录
+        for root, dirs, files in os.walk(sub_dir):
+            # 过滤掉隐藏目录
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+
+            p_root = Path(root)
+            if (p_root / "SKILL.md").exists() or (p_root / "skill.md").exists():
+                skill_name = p_root.name
+                rel_path = p_root.relative_to(sub_dir)
+                category = str(rel_path.parent).replace("\\", "/") if str(rel_path.parent) != "." else ""
+
                 custom_path = overrides.get(skill_name, "").strip()
                 target_install_dir = Path(custom_path).expanduser() if custom_path else default_install_to
                 target_path = target_install_dir / skill_name
@@ -142,11 +150,12 @@ def scan_all_skills(cfg):
 
                 all_skills.append({
                     "name": skill_name,
+                    "category": category,
                     "source_id": src_id,
                     "source_name": src_name,
                     "source_branch": src.get("branch", "main"),
-                    "source_path": str(item),
-                    "desc": parse_skill_desc(item),
+                    "source_path": str(p_root),
+                    "desc": parse_skill_desc(p_root),
                     "custom_install_to": custom_path,
                     "effective_install_to": str(target_install_dir),
                     "is_custom": bool(custom_path),
@@ -392,10 +401,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 ${s.installed ? '已挂载' : '未安装'}
               </span>
             </div>
-            <div class="text-[11px] text-indigo-600 font-medium mb-2 flex items-center gap-1 truncate">
-              <span>🏷️ ${s.source_name}</span>
-              <span class="text-slate-400">·</span>
-              <span class="font-mono text-slate-500">${s.source_branch}</span>
+            <div class="text-[11px] text-indigo-600 font-medium mb-2 flex items-center gap-1.5 flex-wrap">
+              <span class="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded text-[10px] font-mono border border-indigo-100">🏷️ ${s.source_name} (${s.source_branch})</span>
+              ${s.category ? `<span class="bg-amber-50 text-amber-800 px-1.5 py-0.5 rounded text-[10px] font-mono border border-amber-200" title="分类目录: ${s.category}">📂 ${s.category}</span>` : ''}
             </div>
             <p class="text-xs text-slate-500 line-clamp-3 leading-relaxed mb-3" title="${s.desc}">${s.desc}</p>
           </div>
@@ -424,7 +432,7 @@ HTML_PAGE = """<!DOCTYPE html>
       const q = document.getElementById('search-box').value.toLowerCase();
       const srcFilter = document.getElementById('source-filter').value;
       const filtered = currentSkills.filter(s => {
-        const matchText = s.name.toLowerCase().includes(q) || s.desc.toLowerCase().includes(q);
+        const matchText = s.name.toLowerCase().includes(q) || s.desc.toLowerCase().includes(q) || (s.category && s.category.toLowerCase().includes(q));
         const matchSrc = (srcFilter === 'all') || (s.source_id === srcFilter);
         return matchText && matchSrc;
       });
