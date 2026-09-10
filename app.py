@@ -18,7 +18,8 @@ CACHE_BASE_DIR = BASE_DIR / ".skillbox_cache"
 DEFAULT_CONFIG = {
     "default_install_to": str(Path.home() / ".agents" / "skills"),
     "sources": [],
-    "skill_overrides": {}  # { "skill_name": "custom/path" }
+    "folder_overrides": {},  # { "business/bind-center": "custom/path" }
+    "skill_overrides": {}   # { "skill_name": "custom/path" }
 }
 
 def load_config():
@@ -42,6 +43,8 @@ def load_config():
             pass
     if "sources" not in cfg or not isinstance(cfg["sources"], list):
         cfg["sources"] = []
+    if "folder_overrides" not in cfg or not isinstance(cfg["folder_overrides"], dict):
+        cfg["folder_overrides"] = {}
     if "skill_overrides" not in cfg or not isinstance(cfg["skill_overrides"], dict):
         cfg["skill_overrides"] = {}
     return cfg
@@ -213,11 +216,37 @@ def auto_update_scheduler():
         except Exception as e:
             pass
 
+def resolve_skill_install_dir(skill_name, folder_path, cfg):
+    """
+    自底向上解析某个 Skill 的目标安装路径：
+    1. Skill 自身专属路径 (skill_overrides)
+    2. 所在目录及逐级向上匹配的祖先目录路径 (folder_overrides，例如 business/bind-center -> business)
+    3. 全局默认安装路径 (default_install_to)
+    返回: (Path对象, 来源类型 'skill'|'folder'|'default', 路径字符串, 命中的目录键名)
+    """
+    skill_overrides = cfg.get("skill_overrides", {})
+    folder_overrides = cfg.get("folder_overrides", {})
+    default_install_to = Path(cfg.get("default_install_to", "")).expanduser()
+
+    # 1. 技能自身专属
+    if skill_name in skill_overrides and skill_overrides[skill_name].strip():
+        p = skill_overrides[skill_name].strip()
+        return (Path(p).expanduser(), "skill", p, skill_name)
+
+    # 2. 目录及祖先目录匹配 (自底向上寻找最精准的目录配置)
+    if folder_path:
+        parts = [seg for seg in folder_path.strip("/").split("/") if seg]
+        candidates = ["/".join(parts[:i]) for i in range(len(parts), 0, -1)]
+        for c in candidates:
+            if c in folder_overrides and folder_overrides[c].strip():
+                fp = folder_overrides[c].strip()
+                return (Path(fp).expanduser(), "folder", fp, c)
+
+    # 3. 全局默认路径
+    return (default_install_to, "default", str(default_install_to), "")
+
 def scan_all_skills(cfg):
     sources = cfg.get("sources", [])
-    default_install_to = Path(cfg.get("default_install_to", "")).expanduser()
-    overrides = cfg.get("skill_overrides", {})
-
     all_skills = []
 
     for src in sources:
@@ -241,9 +270,8 @@ def scan_all_skills(cfg):
                 folder_path = str(rel_path.parent).replace("\\", "/") if str(rel_path.parent) != "." else ""
                 desc, file_tags = parse_skill_metadata(p_root)
 
-                custom_path = overrides.get(skill_name, "").strip()
-                target_install_dir = Path(custom_path).expanduser() if custom_path else default_install_to
-                target_path = target_install_dir / skill_name
+                target_dir, path_src_type, path_str, matched_folder = resolve_skill_install_dir(skill_name, folder_path, cfg)
+                target_path = target_dir / skill_name
                 installed = target_path.exists()
 
                 all_skills.append({
@@ -255,9 +283,12 @@ def scan_all_skills(cfg):
                     "source_branch": src.get("branch", "main"),
                     "source_path": str(p_root),
                     "desc": desc,
-                    "custom_install_to": custom_path,
-                    "effective_install_to": str(target_install_dir),
-                    "is_custom": bool(custom_path),
+                    "custom_install_to": cfg.get("skill_overrides", {}).get(skill_name, "").strip(),
+                    "folder_install_to": path_str if path_src_type == "folder" else "",
+                    "matched_folder": matched_folder,
+                    "effective_install_to": str(target_dir),
+                    "path_source_type": path_src_type,
+                    "is_custom": path_src_type != "default",
                     "installed": installed
                 })
 
@@ -380,6 +411,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div class="flex items-center gap-2 shrink-0">
           <button id="btn-back-parent" onclick="navigateUp()" class="px-3 py-1 bg-slate-100 hover:bg-slate-200/80 text-slate-700 rounded-lg text-xs font-medium transition flex items-center gap-1.5 active:scale-98">
             <span>⬅</span> 返回上一级
+          </button>
+          <button id="btn-config-current-folder" onclick="openCurrentFolderPathModal()" class="px-3 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-xs font-medium transition flex items-center gap-1 active:scale-98">
+            <span>⚙️</span> 目录专属路径
           </button>
           <button id="btn-select-current-dir" onclick="selectCurrentDirSkills(true)" class="px-3 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-xs font-semibold transition active:scale-98">
             全选本目录
@@ -523,6 +557,32 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div class="flex items-center gap-2">
           <button onclick="closePathModal()" class="px-3.5 py-2 text-xs text-slate-600 hover:bg-slate-200/80 rounded-xl font-medium transition">取消</button>
           <button onclick="saveSkillPathModal()" class="px-4.5 py-2 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold shadow-xs transition">确认保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 3: Custom Folder Mount Path -->
+  <div id="folder-path-modal" class="fixed inset-0 modal-backdrop hidden flex items-center justify-center p-4 z-50">
+    <div class="bg-white w-full max-w-md rounded-2xl border border-slate-200 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+      <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+        <h3 class="font-bold text-sm text-slate-900">设置目录专属安装路径</h3>
+        <button onclick="closeFolderPathModal()" class="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
+      </div>
+      <div class="p-6 space-y-3.5">
+        <p class="text-xs text-slate-500 leading-relaxed">
+          为目录 <span id="folder-modal-path-name" class="font-bold text-slate-900 font-mono"></span> 下的所有技能统一配置专属安装目录。其子目录与所有技能将自动继承此路径。留空则恢复继承上级或全局默认路径。
+        </p>
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1.5">目录专属目标绝对路径</label>
+          <input id="folder-modal-input" type="text" placeholder="如: D:\projects\my-app\.opencode\skills" class="w-full px-3.5 py-2 text-xs font-mono border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
+        </div>
+      </div>
+      <div class="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+        <button onclick="resetFolderPathToDefault()" class="text-xs text-slate-500 hover:text-slate-900 transition underline">恢复继承默认</button>
+        <div class="flex items-center gap-2">
+          <button onclick="closeFolderPathModal()" class="px-3.5 py-2 text-xs text-slate-600 hover:bg-slate-200/80 rounded-xl font-medium transition">取消</button>
+          <button onclick="saveFolderPathModal()" class="px-4.5 py-2 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold shadow-xs transition">确认保存并生效</button>
         </div>
       </div>
     </div>
@@ -781,9 +841,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
       const backBtn = document.getElementById('btn-back-parent');
       const selectCurBtn = document.getElementById('btn-select-current-dir');
 
+      const configCurFolderBtn = document.getElementById('btn-config-current-folder');
+
       if (isSearchMode) {
         backBtn.classList.remove('hidden');
         selectCurBtn.classList.add('hidden');
+        if (configCurFolderBtn) configCurFolderBtn.classList.add('hidden');
         trail.innerHTML = `
           <span class="text-slate-400">🔍 全局搜索匹配:</span>
           <span class="font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md font-mono">"${searchKeyword}"</span>
@@ -795,6 +858,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       if (!currentNavPath) {
         backBtn.classList.add('hidden');
         selectCurBtn.classList.add('hidden');
+        if (configCurFolderBtn) configCurFolderBtn.classList.add('hidden');
         trail.innerHTML = `
           <span class="font-bold text-slate-900 flex items-center gap-1.5">
             <span>🏠</span> 根目录 (顶级分类目录)
@@ -805,6 +869,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
       backBtn.classList.remove('hidden');
       selectCurBtn.classList.remove('hidden');
+      if (configCurFolderBtn) configCurFolderBtn.classList.remove('hidden');
 
       const parts = currentNavPath.split('/');
       let html = `
@@ -910,6 +975,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
     // 单张技能卡片 UI 渲染 (设计优化)
     function renderSingleSkillCard(s, showPathBadge = false) {
       const isChecked = selectedSkills.has(s.name);
+      
+      let pathBadgeText = '全局默认:';
+      let pathBadgeStyle = 'text-slate-400';
+      if (s.path_source_type === 'skill') {
+        pathBadgeText = '技能专属:';
+        pathBadgeStyle = 'text-indigo-600 font-semibold';
+      } else if (s.path_source_type === 'folder') {
+        pathBadgeText = `目录(${s.matched_folder}):`;
+        pathBadgeStyle = 'text-amber-700 font-semibold';
+      }
+
       return `
         <div class="skill-card bg-white p-4 rounded-2xl border ${s.installed ? 'border-indigo-300/80 bg-indigo-50/15' : 'border-slate-200/90'} shadow-xs hover:shadow-md transition-all relative flex flex-col justify-between" data-name="${s.name}" data-desc="${s.desc}" data-source="${s.source_id}">
           <div>
@@ -924,7 +1000,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <!-- Tags & Badges -->
             <div class="text-[11px] font-medium mb-2.5 flex items-center gap-1.5 flex-wrap">
               <span class="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md text-[10px] font-mono border border-indigo-100">🏷️ ${s.source_name}</span>
-              <button onclick="selectTag('${s.tag}')" class="bg-amber-50 hover:bg-amber-100 text-amber-800 px-2 py-0.5 rounded-md text-[10px] font-mono border border-amber-200 cursor-pointer transition" title="所属目录名: ${s.tag}">📂 ${s.tag}</button>
+              <button onclick="selectTag('${s.tag}')" class="bg-amber-50 hover:bg-amber-100 text-amber-800 px-2 py-0.5 rounded-md text-[10px] font-mono border border-amber-200 cursor-pointer transition" title="所属直接目录名: ${s.tag}">📂 ${s.tag}</button>
               ${showPathBadge && s.folder_path ? `<button onclick="navigateTo('${s.folder_path}')" class="bg-slate-100 hover:bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded text-[10px] font-mono transition" title="进入所在目录">📍 ${s.folder_path}</button>` : ''}
             </div>
 
@@ -936,7 +1012,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <!-- Install Target Info -->
             <div class="p-2 bg-slate-50 rounded-xl border border-slate-100 text-[11px] text-slate-600 mb-3 flex items-center justify-between gap-2">
               <div class="truncate flex items-center gap-1" title="目标挂载路径: ${s.effective_install_to}">
-                <span class="text-slate-400 shrink-0 font-medium">${s.is_custom ? '专属目录:' : '默认目录:'}</span>
+                <span class="${pathBadgeStyle} shrink-0">${pathBadgeText}</span>
                 <span class="font-mono text-[10px] text-slate-700 truncate">${s.effective_install_to}</span>
               </div>
               <button onclick="openPathModal('${s.name}', '${s.custom_install_to || ''}')" class="text-indigo-600 hover:text-indigo-800 shrink-0 font-semibold hover:underline">修改</button>
@@ -1023,23 +1099,32 @@ HTML_PAGE = r"""<!DOCTYPE html>
               </span>
             </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 mb-6">
-              ${subFolders.map(f => `
-                <div onclick="navigateTo('${f.fullPath}')" class="bg-white hover:bg-indigo-50/40 p-4 rounded-2xl border border-slate-200/90 hover:border-indigo-300 shadow-2xs hover:shadow-xs transition cursor-pointer flex items-center justify-between group select-none">
-                  <div class="flex items-center gap-3 min-w-0">
-                    <span class="text-3xl group-hover:scale-110 transition-transform shrink-0">📁</span>
-                    <div class="min-w-0">
-                      <div class="font-bold text-xs text-slate-900 group-hover:text-indigo-600 truncate font-mono">${f.name}</div>
-                      <div class="text-[11px] text-slate-400 mt-0.5 truncate">
-                        ${f.totalSkills} 个技能 ${f.installedCount > 0 ? `· <span class="text-emerald-600 font-medium">已挂载 ${f.installedCount}</span>` : ''}
+              ${subFolders.map(f => {
+                const folderOverride = (globalConfig.folder_overrides || {})[f.fullPath];
+                return `
+                <div onclick="navigateTo('${f.fullPath}')" class="bg-white hover:bg-indigo-50/40 p-4 rounded-2xl border ${folderOverride ? 'border-amber-300 bg-amber-50/15' : 'border-slate-200/90'} hover:border-indigo-300 shadow-2xs hover:shadow-xs transition cursor-pointer flex flex-col justify-between gap-3 group select-none">
+                  <div class="flex items-start justify-between gap-2.5">
+                    <div class="flex items-center gap-2.5 min-w-0">
+                      <span class="text-3xl group-hover:scale-110 transition-transform shrink-0">📁</span>
+                      <div class="min-w-0">
+                        <div class="font-bold text-xs text-slate-900 group-hover:text-indigo-600 truncate font-mono">${f.name}</div>
+                        <div class="text-[11px] text-slate-400 mt-0.5 truncate">
+                          ${f.totalSkills} 个技能 ${f.installedCount > 0 ? `· <span class="text-emerald-600 font-medium">已挂载 ${f.installedCount}</span>` : ''}
+                        </div>
                       </div>
                     </div>
+                    <span class="text-slate-300 group-hover:text-indigo-500 font-bold text-sm shrink-0 transition">→</span>
                   </div>
-                  <div class="flex items-center gap-1.5 shrink-0" onclick="event.stopPropagation()">
-                    <button onclick="selectSubFolderSkills('${f.fullPath}', true)" class="text-[10px] text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded-md font-semibold transition" title="勾选该目录下所有技能">全选</button>
-                    <span class="text-slate-300 group-hover:text-indigo-500 font-bold text-sm ml-1 transition">→</span>
+
+                  <!-- 目录专属路径提示与操作 -->
+                  <div class="pt-2 border-t border-slate-100 flex items-center justify-between gap-2 text-[10px]" onclick="event.stopPropagation()">
+                    <button onclick="openFolderPathModal('${f.fullPath}')" class="text-indigo-600 hover:text-indigo-800 hover:underline truncate text-left font-medium" title="${folderOverride ? '已配置专属路径: ' + folderOverride : '点击配置本目录统一安装路径'}">
+                      ${folderOverride ? `📍 目录专属: ${folderOverride}` : '⚙️ 设置本目录安装路径'}
+                    </button>
+                    <button onclick="selectSubFolderSkills('${f.fullPath}', true)" class="text-indigo-600 hover:bg-indigo-50 px-1.5 py-0.5 rounded font-semibold transition shrink-0">全选</button>
                   </div>
                 </div>
-              `).join('')}
+              `}).join('')}
             </div>
           </div>
         `;
@@ -1251,6 +1336,52 @@ HTML_PAGE = r"""<!DOCTYPE html>
       await saveSkillPathModal();
     }
 
+    // Modal Operations for Folder Path (目录级挂载)
+    let currentEditingFolder = '';
+
+    function openFolderPathModal(folderPath) {
+      currentEditingFolder = folderPath.trim().replace(/^\/+|\/+$/g, '');
+      const currentOverride = (globalConfig.folder_overrides || {})[currentEditingFolder] || '';
+      document.getElementById('folder-modal-path-name').textContent = currentEditingFolder || '根目录';
+      document.getElementById('folder-modal-input').value = currentOverride;
+      document.getElementById('folder-path-modal').classList.remove('hidden');
+    }
+
+    function openCurrentFolderPathModal() {
+      if (currentNavPath) {
+        openFolderPathModal(currentNavPath);
+      }
+    }
+
+    function closeFolderPathModal() {
+      document.getElementById('folder-path-modal').classList.add('hidden');
+    }
+
+    async function saveFolderPathModal() {
+      const customPath = document.getElementById('folder-modal-input').value.trim();
+      const res = await fetch('/api/folder/set_path', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ folder_path: currentEditingFolder, install_to: customPath })
+      });
+      const data = await res.json();
+      closeFolderPathModal();
+      if (data.ok) {
+        if (data.migrated > 0) {
+          showToast(`目录 [${currentEditingFolder}] 路径已更新，并自动迁移了 ${data.migrated} 个已挂载技能！`);
+        } else {
+          showToast(`目录 [${currentEditingFolder}] 专属安装路径已生效。`);
+        }
+        await loadConfig();
+        await loadSkills();
+      }
+    }
+
+    async function resetFolderPathToDefault() {
+      document.getElementById('folder-modal-input').value = '';
+      await saveFolderPathModal();
+    }
+
     // Sync Selected
     async function syncSelected() {
       const selected = Array.from(selectedSkills);
@@ -1459,6 +1590,60 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(b'{"ok": true}')
+
+        elif url.path == "/api/folder/set_path":
+            cfg = load_config()
+            folder_path = data.get("folder_path", "").strip().strip("/\\")
+            custom_path = data.get("install_to", "").strip()
+            folder_overrides = cfg.get("folder_overrides", {})
+            old_custom_path = folder_overrides.get(folder_path, "").strip()
+            migrated_count = 0
+
+            # 如果目录专属路径改变，自动平滑迁移受影响的已挂载技能
+            if old_custom_path != custom_path:
+                try:
+                    before_skills = scan_all_skills(cfg)
+                    if custom_path:
+                        folder_overrides[folder_path] = custom_path
+                    else:
+                        folder_overrides.pop(folder_path, None)
+                    cfg["folder_overrides"] = folder_overrides
+
+                    after_skills = scan_all_skills(cfg)
+                    after_map = {s["name"]: s for s in after_skills}
+                    prefix = (folder_path + "/") if folder_path else ""
+
+                    for s_b in before_skills:
+                        name = s_b["name"]
+                        fp = s_b.get("folder_path", "")
+                        if (fp == folder_path or fp.startswith(prefix)) and not s_b["custom_install_to"]:
+                            old_target = Path(s_b["effective_install_to"]) / name
+                            s_a = after_map.get(name)
+                            if s_a:
+                                new_target = Path(s_a["effective_install_to"]) / name
+                                if old_target.exists() and old_target != new_target:
+                                    safe_remove_link(old_target)
+                                    new_target.parent.mkdir(parents=True, exist_ok=True)
+                                    src_p = Path(s_b["source_path"])
+                                    if not new_target.exists():
+                                        if sys.platform == "win32":
+                                            subprocess.run(["cmd", "/c", "mklink", "/J", str(new_target), str(src_p)], check=True, stdout=subprocess.DEVNULL)
+                                        else:
+                                            new_target.symlink_to(src_p)
+                                    migrated_count += 1
+                except Exception as e:
+                    print(f"[!] 目录挂载迁移异常: {e}", flush=True)
+
+            if custom_path:
+                folder_overrides[folder_path] = custom_path
+            else:
+                folder_overrides.pop(folder_path, None)
+            cfg["folder_overrides"] = folder_overrides
+            save_config(cfg)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "migrated": migrated_count}).encode("utf-8"))
 
         elif url.path == "/api/autostart":
             enable = bool(data.get("enabled", False))
