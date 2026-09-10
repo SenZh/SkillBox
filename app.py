@@ -102,18 +102,51 @@ def set_autostart(enable: bool):
     return enable
 
 def git_cmd(args, cwd=None):
+    creation_flags = 0x08000000 if sys.platform == "win32" else 0
     res = subprocess.run(
         ["git"] + args,
         cwd=cwd,
         capture_output=True,
         text=True,
         encoding="utf-8",
-        errors="ignore"
+        errors="ignore",
+        creationflags=creation_flags
     )
     if res.returncode != 0:
         err = res.stderr.strip() or res.stdout.strip()
         raise RuntimeError(err or f"Git command failed: {' '.join(args)}")
     return res.stdout.strip()
+
+def safe_create_link(source_path: Path, target_link: Path):
+    """
+    创建目录联结或符号链接：
+    1. Windows 优先调用原生 _winapi.CreateJunction (完全零子进程，零控制台窗口，纳秒级)
+    2. Windows 兜底使用 cmd /c mklink 但带上 CREATE_NO_WINDOW 标志彻底杜绝黑框闪烁
+    3. 类 Unix 平台使用 symlink_to
+    """
+    target_link.parent.mkdir(parents=True, exist_ok=True)
+    if target_link.exists():
+        return
+
+    if sys.platform == "win32":
+        try:
+            import _winapi
+            _winapi.CreateJunction(str(source_path), str(target_link))
+            return
+        except Exception:
+            pass
+
+        # 兜底：带 CREATE_NO_WINDOW 绝不闪终端黑框
+        creation_flags = 0x08000000
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(target_link), str(source_path)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creation_flags
+        )
+    else:
+        target_link.symlink_to(source_path)
 
 def safe_remove_link(link_path: Path):
     """安全解绑符号链接或 NTFS 目录联结 (Junction)，绝不误删物理源码文件"""
@@ -121,7 +154,7 @@ def safe_remove_link(link_path: Path):
         return
     try:
         if sys.platform == "win32":
-            # 在 Windows 上，os.rmdir 可以直接、安全地解绑并删除 NTFS Junction
+            # 在 Windows 上，os.rmdir 可以直接、安全地解绑并删除 NTFS Junction (零子进程零闪屏)
             try:
                 os.rmdir(link_path)
             except OSError:
@@ -130,7 +163,14 @@ def safe_remove_link(link_path: Path):
                 elif link_path.is_file():
                     link_path.unlink()
                 else:
-                    subprocess.run(["cmd", "/c", "rmdir", f'"{str(link_path)}"'], check=True, stdout=subprocess.DEVNULL)
+                    creation_flags = 0x08000000
+                    subprocess.run(
+                        ["cmd", "/c", "rmdir", str(link_path)],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=creation_flags
+                    )
         else:
             if link_path.is_symlink() or link_path.is_file():
                 link_path.unlink()
@@ -1490,23 +1530,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                         if not overrides.get(name):
                             old_link = old_path / name
                             if old_link.exists():
-                                # 1. 卸载旧软链接
-                                if old_link.is_symlink():
-                                    old_link.unlink()
-                                elif old_link.is_dir():
-                                    if sys.platform == "win32":
-                                        subprocess.run(["cmd", "/c", "rmdir", str(old_link)], check=True, stdout=subprocess.DEVNULL)
-                                    else:
-                                        shutil.rmtree(old_link)
-
-                                # 2. 在新目录下创建软链接
+                                # 1. 安全卸载旧软链接 (零闪屏)
+                                safe_remove_link(old_link)
+                                # 2. 在新目录下创建软链接 (原生系统调用零弹窗)
                                 new_link = new_path / name
                                 source_p = Path(s["source_path"])
-                                if not new_link.exists():
-                                    if sys.platform == "win32":
-                                        subprocess.run(["cmd", "/c", "mklink", "/J", str(new_link), str(source_p)], check=True, stdout=subprocess.DEVNULL)
-                                    else:
-                                        new_link.symlink_to(source_p)
+                                safe_create_link(source_p, new_link)
                                 migrated_count += 1
                 except Exception as e:
                     print(f"[!] 迁移软链接异常: {e}", flush=True)
@@ -1647,13 +1676,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                                 new_target = Path(s_a["effective_install_to"]) / name
                                 if old_target.exists() and old_target != new_target:
                                     safe_remove_link(old_target)
-                                    new_target.parent.mkdir(parents=True, exist_ok=True)
                                     src_p = Path(s_b["source_path"])
-                                    if not new_target.exists():
-                                        if sys.platform == "win32":
-                                            subprocess.run(["cmd", "/c", "mklink", "/J", str(new_target), str(src_p)], check=True, stdout=subprocess.DEVNULL)
-                                        else:
-                                            new_target.symlink_to(src_p)
+                                    safe_create_link(src_p, new_target)
                                     migrated_count += 1
                 except Exception as e:
                     print(f"[!] 目录挂载迁移异常: {e}", flush=True)
@@ -1710,13 +1734,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                                     safe_remove_link(old_link)
                                     log(f"[Clean] 清理旧挂载链接: {old_link}")
 
-                        # 2. 挂载到当前精准生效目录
+                        # 2. 挂载到当前精准生效目录 (原生系统调用零弹窗零闪屏)
                         effective_dir.mkdir(parents=True, exist_ok=True)
                         if not target_link.exists():
-                            if sys.platform == "win32":
-                                subprocess.run(["cmd", "/c", "mklink", "/J", str(target_link), str(source_path)], check=True, stdout=subprocess.DEVNULL)
-                            else:
-                                target_link.symlink_to(source_path)
+                            safe_create_link(source_path, target_link)
                             log(f"[Mount] 成功挂载技能: {name} -> {target_link}")
                         installed_count += 1
                     else:
