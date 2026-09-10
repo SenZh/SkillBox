@@ -65,33 +65,38 @@ def git_cmd(args, cwd=None):
         raise RuntimeError(err or f"Git command failed: {' '.join(args)}")
     return res.stdout.strip()
 
-def parse_skill_desc(skill_dir):
+def parse_skill_metadata(skill_dir):
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.exists():
         skill_md = skill_dir / "skill.md"
     if not skill_md.exists():
-        return "无描述"
+        return "无描述", []
     try:
         content = skill_md.read_text(encoding="utf-8", errors="ignore")
         in_frontmatter = False
         desc = ""
+        tags = []
         for line in content.splitlines():
             line_s = line.strip()
             if line_s == "---":
                 in_frontmatter = not in_frontmatter
                 continue
-            if in_frontmatter and line_s.startswith("description:"):
-                desc = line_s.split("description:", 1)[1].strip().strip('"').strip("'")
-                break
+            if in_frontmatter:
+                if line_s.startswith("description:"):
+                    desc = line_s.split("description:", 1)[1].strip().strip('"').strip("'").lstrip(">-").strip()
+                elif line_s.startswith("tags:"):
+                    raw = line_s.split("tags:", 1)[1].strip()
+                    if raw.startswith("[") and raw.endswith("]"):
+                        tags = [t.strip().strip('"').strip("'") for t in raw[1:-1].split(",") if t.strip()]
         if not desc:
             for line in content.splitlines():
                 l = line.strip()
                 if l and not l.startswith("#") and not l.startswith("---"):
                     desc = l[:120] + ("..." if len(l) > 120 else "")
                     break
-        return desc or "无描述"
+        return desc or "无描述", tags
     except Exception:
-        return "无法读取描述"
+        return "无法读取描述", []
 
 def pull_single_source(src):
     src_id = src["id"]
@@ -142,6 +147,18 @@ def scan_all_skills(cfg):
                 skill_name = p_root.name
                 rel_path = p_root.relative_to(sub_dir)
                 category = str(rel_path.parent).replace("\\", "/") if str(rel_path.parent) != "." else ""
+                desc, file_tags = parse_skill_metadata(p_root)
+
+                # 提取各级 tags
+                tag_list = []
+                if category:
+                    tag_list.append(category)
+                    for part in category.split("/"):
+                        if part and part not in tag_list:
+                            tag_list.append(part)
+                for ft in file_tags:
+                    if ft and ft not in tag_list:
+                        tag_list.append(ft)
 
                 custom_path = overrides.get(skill_name, "").strip()
                 target_install_dir = Path(custom_path).expanduser() if custom_path else default_install_to
@@ -151,11 +168,12 @@ def scan_all_skills(cfg):
                 all_skills.append({
                     "name": skill_name,
                     "category": category,
+                    "tags": tag_list,
                     "source_id": src_id,
                     "source_name": src_name,
                     "source_branch": src.get("branch", "main"),
                     "source_path": str(p_root),
-                    "desc": parse_skill_desc(p_root),
+                    "desc": desc,
                     "custom_install_to": custom_path,
                     "effective_install_to": str(target_install_dir),
                     "is_custom": bool(custom_path),
@@ -197,7 +215,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
       <!-- Left Column: Config & Sources -->
-      <div class="lg:col-span-4 space-y-6">
+      <div class="lg:col-span-4 space-y-6 min-w-0">
         <!-- 1. Default Install Path Card -->
         <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
           <h2 class="text-sm font-semibold text-slate-900 mb-3 flex items-center justify-between">
@@ -213,7 +231,7 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
 
         <!-- 2. Git Sources Management -->
-        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm min-w-0">
           <div class="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
             <h2 class="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
               <span>🌿 Git 仓库源列表</span>
@@ -224,7 +242,7 @@ HTML_PAGE = """<!DOCTYPE html>
             </button>
           </div>
 
-          <div id="sources-list" class="space-y-2.5">
+          <div id="sources-list" class="space-y-2.5 min-w-0">
             <div class="py-8 text-center text-xs text-slate-400">暂无 Git 仓库，请点击上方按钮添加</div>
           </div>
         </div>
@@ -233,20 +251,30 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
 
       <!-- Right Column: Skills Explorer -->
-      <div class="lg:col-span-8">
+      <div class="lg:col-span-8 min-w-0">
         <!-- Top Toolbar -->
-        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-          <div class="flex items-center gap-2 flex-wrap">
-            <input id="search-box" oninput="filterSkills()" type="text" placeholder="搜索技能名称、简介..." class="px-3 py-1.5 text-sm border border-slate-300 rounded-lg w-56 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            <select id="source-filter" onchange="filterSkills()" class="px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-              <option value="all">所有仓库</option>
-            </select>
-            <span id="skill-count" class="text-xs text-slate-500">共 0 个技能</span>
+        <div class="space-y-3 mb-4">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div class="flex items-center gap-2 flex-wrap min-w-0">
+              <input id="search-box" oninput="filterSkills()" type="text" placeholder="搜索技能名称、简介、标签..." class="px-3 py-1.5 text-xs border border-slate-300 rounded-lg w-48 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <select id="source-filter" onchange="filterSkills()" class="px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="all">所有仓库源</option>
+              </select>
+              <select id="tag-filter" onchange="onTagSelectChange()" class="px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="all">所有 Tag / 分类</option>
+              </select>
+              <span id="skill-count" class="text-xs text-slate-500 shrink-0">共 0 个技能</span>
+            </div>
+            <div class="flex items-center gap-2 text-xs shrink-0">
+              <button onclick="selectAll(true)" class="text-indigo-600 hover:underline">全选</button>
+              <span class="text-slate-300">|</span>
+              <button onclick="selectAll(false)" class="text-indigo-600 hover:underline">清空</button>
+            </div>
           </div>
-          <div class="flex items-center gap-2 text-xs">
-            <button onclick="selectAll(true)" class="text-indigo-600 hover:underline">全选</button>
-            <span class="text-slate-300">|</span>
-            <button onclick="selectAll(false)" class="text-indigo-600 hover:underline">清空</button>
+
+          <!-- Tag Pills 快捷标签过滤栏 -->
+          <div id="tag-pills-bar" class="flex items-center gap-1.5 flex-wrap text-[11px] pt-1 border-t border-slate-100">
+            <!-- 动态填充 -->
           </div>
         </div>
 
@@ -325,6 +353,7 @@ HTML_PAGE = """<!DOCTYPE html>
     let globalConfig = { default_install_to: '', sources: [], skill_overrides: {} };
     let currentSkills = [];
     let currentEditingSkill = '';
+    let currentSelectedTag = 'all';
 
     async function init() {
       await loadConfig();
@@ -347,18 +376,18 @@ HTML_PAGE = """<!DOCTYPE html>
         return;
       }
       el.innerHTML = sources.map(s => `
-        <div class="p-3 bg-slate-50 hover:bg-slate-100/80 border border-slate-200 rounded-lg transition flex flex-col justify-between gap-2">
-          <div class="flex items-start justify-between gap-2">
-            <div>
-              <div class="font-semibold text-xs text-slate-900 truncate flex items-center gap-1.5">
-                <span>${s.name || '未命名'}</span>
-                <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100 font-mono">${s.branch || 'main'}</span>
+        <div class="p-3 bg-slate-50 hover:bg-slate-100/80 border border-slate-200 rounded-lg transition flex flex-col justify-between gap-2 min-w-0 overflow-hidden w-full">
+          <div class="flex items-start justify-between gap-2 min-w-0 w-full">
+            <div class="min-w-0 flex-1 overflow-hidden">
+              <div class="font-semibold text-xs text-slate-900 flex items-center gap-1.5 min-w-0">
+                <span class="truncate">${s.name || '未命名'}</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100 font-mono shrink-0">${s.branch || 'main'}</span>
               </div>
-              <div class="text-[11px] text-slate-400 font-mono truncate mt-0.5" title="${s.git_url}">${s.git_url}</div>
-              <div class="text-[10px] text-slate-500 mt-1">子目录: <span class="font-mono text-slate-700">${s.sub_dir || '.'}</span></div>
+              <div class="text-[11px] text-slate-400 font-mono truncate block w-full mt-1 select-all" title="${s.git_url}">${s.git_url}</div>
+              <div class="text-[10px] text-slate-500 mt-1 truncate">子目录: <span class="font-mono text-slate-700">${s.sub_dir || '.'}</span></div>
             </div>
           </div>
-          <div class="flex items-center justify-end gap-1.5 pt-2 border-t border-slate-200/60 text-xs">
+          <div class="flex items-center justify-end gap-1.5 pt-2 border-t border-slate-200/60 text-xs shrink-0">
             <button onclick="pullSingleSource('${s.id}')" class="px-2 py-0.5 text-[11px] bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200 rounded transition">🔄 更新</button>
             <button onclick="editSource('${s.id}')" class="px-2 py-0.5 text-[11px] bg-white hover:bg-slate-200 text-slate-600 border border-slate-200 rounded transition">✏️ 编辑</button>
             <button onclick="deleteSource('${s.id}')" class="px-2 py-0.5 text-[11px] bg-white hover:bg-rose-50 text-rose-600 border border-slate-200 rounded transition">🗑️ 删除</button>
@@ -378,10 +407,78 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
 
+    function updateTagOptions(skills) {
+      const tagCounts = {};
+      skills.forEach(s => {
+        (s.tags || []).forEach(t => {
+          tagCounts[t] = (tagCounts[t] || 0) + 1;
+        });
+      });
+
+      const sortedTags = Object.keys(tagCounts).sort((a, b) => {
+        // 先按包含斜杠的层级排，再按数量排
+        return tagCounts[b] - tagCounts[a];
+      });
+
+      // 1. 更新下拉选择框
+      const select = document.getElementById('tag-filter');
+      const curVal = select.value;
+      select.innerHTML = `<option value="all">所有 Tag / 分类 (${skills.length})</option>` + sortedTags.map(t => `
+        <option value="${t}">${t} (${tagCounts[t]})</option>
+      `).join('');
+      if (sortedTags.includes(curVal)) {
+        select.value = curVal;
+      } else {
+        select.value = 'all';
+        currentSelectedTag = 'all';
+      }
+
+      // 2. 渲染快捷胶囊栏 (取前 12 个最热门/主要分类)
+      const pillsContainer = document.getElementById('tag-pills-bar');
+      const topTags = sortedTags.slice(0, 14);
+      pillsContainer.innerHTML = `
+        <span class="text-slate-400 mr-1 shrink-0">快捷过滤:</span>
+        <button onclick="selectTag('all')" class="px-2 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 ${currentSelectedTag === 'all' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
+          全部 (${skills.length})
+        </button>
+      ` + topTags.map(t => `
+        <button onclick="selectTag('${t}')" class="px-2 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 ${currentSelectedTag === t ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
+          ${t} <span class="opacity-70">(${tagCounts[t]})</span>
+        </button>
+      `).join('');
+    }
+
+    function onTagSelectChange() {
+      currentSelectedTag = document.getElementById('tag-filter').value;
+      updateTagPillsHighlight();
+      filterSkills();
+    }
+
+    function selectTag(tag) {
+      currentSelectedTag = tag;
+      document.getElementById('tag-filter').value = tag;
+      updateTagPillsHighlight();
+      filterSkills();
+    }
+
+    function updateTagPillsHighlight() {
+      document.querySelectorAll('#tag-pills-bar button').forEach(btn => {
+        const text = btn.textContent.trim();
+        if (currentSelectedTag === 'all' && text.startsWith('全部')) {
+          btn.className = "px-2 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 bg-indigo-600 text-white shadow-xs";
+        } else if (text.startsWith(currentSelectedTag + ' ') || text === currentSelectedTag) {
+          btn.className = "px-2 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 bg-indigo-600 text-white shadow-xs";
+        } else {
+          btn.className = "px-2 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 bg-slate-100 text-slate-600 hover:bg-slate-200";
+        }
+      });
+    }
+
     async function loadSkills() {
       const res = await fetch('/api/skills');
       const data = await res.json();
       currentSkills = data.skills || [];
+      updateTagOptions(currentSkills);
       filterSkills();
     }
 
@@ -389,7 +486,7 @@ HTML_PAGE = """<!DOCTYPE html>
       const grid = document.getElementById('skills-grid');
       document.getElementById('skill-count').textContent = `共 ${skills.length} 个技能`;
       if (skills.length === 0) {
-        grid.innerHTML = `<div class="col-span-2 py-16 text-center text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">未扫描到任何技能包</div>`;
+        grid.innerHTML = `<div class="col-span-2 py-16 text-center text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">未扫描到匹配条件的技能包</div>`;
         return;
       }
       grid.innerHTML = skills.map(s => `
@@ -403,7 +500,7 @@ HTML_PAGE = """<!DOCTYPE html>
             </div>
             <div class="text-[11px] text-indigo-600 font-medium mb-2 flex items-center gap-1.5 flex-wrap">
               <span class="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded text-[10px] font-mono border border-indigo-100">🏷️ ${s.source_name} (${s.source_branch})</span>
-              ${s.category ? `<span class="bg-amber-50 text-amber-800 px-1.5 py-0.5 rounded text-[10px] font-mono border border-amber-200" title="分类目录: ${s.category}">📂 ${s.category}</span>` : ''}
+              ${s.category ? `<button onclick="selectTag('${s.category}')" class="bg-amber-50 hover:bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded text-[10px] font-mono border border-amber-200 cursor-pointer transition" title="点击筛选此分类">📂 ${s.category}</button>` : ''}
             </div>
             <p class="text-xs text-slate-500 line-clamp-3 leading-relaxed mb-3" title="${s.desc}">${s.desc}</p>
           </div>
@@ -431,10 +528,18 @@ HTML_PAGE = """<!DOCTYPE html>
     function filterSkills() {
       const q = document.getElementById('search-box').value.toLowerCase();
       const srcFilter = document.getElementById('source-filter').value;
+      const tagFilter = currentSelectedTag;
+
       const filtered = currentSkills.filter(s => {
-        const matchText = s.name.toLowerCase().includes(q) || s.desc.toLowerCase().includes(q) || (s.category && s.category.toLowerCase().includes(q));
+        const matchSearch = s.name.toLowerCase().includes(q) 
+          || s.desc.toLowerCase().includes(q) 
+          || (s.category && s.category.toLowerCase().includes(q))
+          || (s.tags && s.tags.some(t => t.toLowerCase().includes(q)));
+
         const matchSrc = (srcFilter === 'all') || (s.source_id === srcFilter);
-        return matchText && matchSrc;
+        const matchTag = (tagFilter === 'all') || (s.tags && s.tags.includes(tagFilter));
+
+        return matchSearch && matchSrc && matchTag;
       });
       renderSkills(filtered);
     }
