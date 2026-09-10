@@ -57,12 +57,16 @@
 
 ### 1. 启动服务 (Windows)
 
-SkillBox 支持完全脱离命令提示符窗口在后台静默运行：
+SkillBox 支持完全脱离命令提示符窗口在后台静默运行，并支持注册为开机启动：
 
 * **启动服务**：双击运行根目录下的 **`start.bat`**；
   - 服务在后台静默拉起，并自动在默认浏览器中打开控制台：`http://127.0.0.1:7860`。
 * **停止服务**：双击运行 **`stop.bat`**；
 * **查看状态**：双击运行 **`status.bat`**。
+* **开机自启动**：
+  - **方式 1 (推荐)**：在 WebUI 控制台的「⚙️ 仓库与配置」页面，直接开启 **「Windows 开机静默自启服务」** 开关；
+  - **方式 2 (脚本)**：双击运行 **`register_autostart.bat`**（取消运行 **`unregister_autostart.bat`**）；
+  - *特性：基于当前用户注册表，无需管理员提权，开机在后台静默运行并执行定时更新，不弹出黑框与浏览器。*
 
 > **命令行方式**（前台调试）：
 > ```bash
@@ -99,11 +103,14 @@ skillbox/
 ├── start.bat              # Windows 后台静默启动脚本
 ├── stop.bat               # Windows 安全停止脚本
 ├── status.bat             # Windows 状态查看脚本
+├── register_autostart.bat # 一键注册开机自启脚本
+├── unregister_autostart.bat # 一键取消开机自启脚本
 ├── run_tests.py           # 自动化单元测试运行器
 ├── tests/                 # 自动化测试套件
 │   ├── test_config.py     # 配置管理与持久化测试
 │   ├── test_scanner.py    # 元数据解析与 Tag 父目录名规则测试
 │   ├── test_symlink.py    # Junction 挂载与安全解绑测试
+│   ├── test_autostart.py  # Windows 开机自启注册测试
 │   └── test_api.py        # HTTP REST API 全链路测试
 ├── docs/
 │   ├── architecture.md    # 系统架构设计文档

@@ -50,6 +50,42 @@ def save_config(cfg):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
+AUTOSTART_APP_NAME = "SkillBox"
+AUTOSTART_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+def get_autostart_status():
+    """获取当前用户 Windows 开机自启动状态"""
+    if sys.platform != "win32":
+        return False
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_READ) as key:
+            winreg.QueryValueEx(key, AUTOSTART_APP_NAME)
+            return True
+    except WindowsError:
+        return False
+
+def set_autostart(enable: bool):
+    """注册或注销 Windows 开机静默自启动 (无需管理员权限)"""
+    if sys.platform != "win32":
+        return False
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_SET_VALUE) as key:
+        if enable:
+            python_exe = sys.executable
+            pythonw_exe = python_exe.lower().replace("python.exe", "pythonw.exe")
+            if not os.path.exists(pythonw_exe):
+                pythonw_exe = python_exe
+            app_script = str((BASE_DIR / "app.py").resolve())
+            cmd_str = f'"{pythonw_exe}" "{app_script}" --silent'
+            winreg.SetValueEx(key, AUTOSTART_APP_NAME, 0, winreg.REG_SZ, cmd_str)
+        else:
+            try:
+                winreg.DeleteValue(key, AUTOSTART_APP_NAME)
+            except WindowsError:
+                pass
+    return enable
+
 def git_cmd(args, cwd=None):
     res = subprocess.run(
         ["git"] + args,
@@ -399,6 +435,23 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <!-- 动态注入仓库卡片 -->
         </div>
       </div>
+
+      <!-- Section 3: Windows Auto-start on Boot -->
+      <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
+        <div class="flex items-center justify-between gap-4">
+          <div class="space-y-1">
+            <h2 class="text-base font-bold text-slate-900 flex items-center gap-2">
+              <span>🚀</span> Windows 开机静默自启服务
+            </h2>
+            <p class="text-xs text-slate-500">开机登录 Windows 时自动在后台静默启动 SkillBox 常驻服务（注册于当前用户注册表，无需管理员权限，开机不弹出黑框与浏览器，后台静默自动拉取更新）。</p>
+          </div>
+          <!-- Toggle Switch -->
+          <label class="relative inline-flex items-center cursor-pointer shrink-0">
+            <input type="checkbox" id="autostart-toggle" onchange="toggleAutostart(this.checked)" class="sr-only peer">
+            <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+          </label>
+        </div>
+      </div>
     </div>
   </main>
 
@@ -523,6 +576,36 @@ HTML_PAGE = r"""<!DOCTYPE html>
       renderSettingsSources(globalConfig.sources || []);
       updateSourceFilterOptions(globalConfig.sources || []);
       document.getElementById('nav-repo-badge').textContent = (globalConfig.sources || []).length;
+      await loadAutostartStatus();
+    }
+
+    async function loadAutostartStatus() {
+      try {
+        const res = await fetch('/api/autostart');
+        const data = await res.json();
+        const toggle = document.getElementById('autostart-toggle');
+        if (toggle) {
+          toggle.checked = Boolean(data.enabled);
+        }
+      } catch (e) {}
+    }
+
+    async function toggleAutostart(enabled) {
+      try {
+        const res = await fetch('/api/autostart', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ enabled })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          showToast(data.enabled ? '已成功注册 Windows 开机静默自启！' : '已取消 Windows 开机自启。');
+        } else {
+          showToast('设置开机自启失败', true);
+        }
+      } catch (e) {
+        showToast('请求异常: ' + e, true);
+      }
     }
 
     // 渲染「设置页」中的仓库源卡片
@@ -1215,6 +1298,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"skills": skills}).encode("utf-8"))
+        elif url.path == "/api/autostart":
+            status = get_autostart_status()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"enabled": status, "platform": sys.platform}).encode("utf-8"))
         else:
             self.send_response(404)
             self.end_headers()
@@ -1371,6 +1460,14 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'{"ok": true}')
 
+        elif url.path == "/api/autostart":
+            enable = bool(data.get("enabled", False))
+            res = set_autostart(enable)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "enabled": res}).encode("utf-8"))
+
         elif url.path == "/api/sync":
             cfg = load_config()
             selected = set(data.get("selected", []))
@@ -1447,11 +1544,12 @@ def main():
     # 启动定时自动更新后台守护线程
     threading.Thread(target=auto_update_scheduler, daemon=True).start()
 
-    def delayed_open():
-        time.sleep(0.6)
-        webbrowser.open(url)
-
-    threading.Thread(target=delayed_open, daemon=True).start()
+    is_silent = "--silent" in sys.argv or "--no-browser" in sys.argv
+    if not is_silent:
+        def delayed_open():
+            time.sleep(0.6)
+            webbrowser.open(url)
+        threading.Thread(target=delayed_open, daemon=True).start()
 
     try:
         server.serve_forever()
