@@ -262,11 +262,13 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="flex items-center gap-2 text-xs shrink-0">
               <!-- 视图切换 -->
               <div class="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs">
-                <button id="view-btn-folder" onclick="switchView('folder')" class="px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-600 text-white shadow-2xs transition">📁 文件夹</button>
-                <button id="view-btn-grid" onclick="switchView('grid')" class="px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 hover:text-slate-900 transition">▦ 平铺</button>
+                <button id="view-btn-folder" onclick="switchView('folder')" class="px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-600 text-white shadow-2xs transition flex items-center gap-1">
+                  <span>📁</span> 目录树浏览
+                </button>
+                <button id="view-btn-grid" onclick="switchView('grid')" class="px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 hover:text-slate-900 transition flex items-center gap-1">
+                  <span>▦</span> 平铺所有
+                </button>
               </div>
-              <span class="text-slate-300">|</span>
-              <button id="btn-toggle-all-folders" onclick="toggleAllFolders()" class="text-slate-500 hover:text-slate-800">全部折叠</button>
               <span class="text-slate-300">|</span>
               <button onclick="selectAll(true)" class="text-indigo-600 hover:underline">全选</button>
               <span class="text-slate-300">|</span>
@@ -280,7 +282,22 @@ HTML_PAGE = """<!DOCTYPE html>
           </div>
         </div>
 
-        <!-- Skills Container (Dynamic Folder / Grid) -->
+        <!-- Breadcrumb Navigation Bar (像文件管理器一样逐层进入) -->
+        <div id="breadcrumb-nav" class="flex items-center justify-between gap-2 p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs mb-4 min-w-0">
+          <div class="flex items-center gap-1.5 text-xs flex-wrap min-w-0" id="breadcrumb-trail">
+            <!-- 动态面包屑 -->
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <button id="btn-back-parent" onclick="navigateUp()" class="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md text-xs font-medium transition flex items-center gap-1">
+              <span>⬅</span> 返回上一级
+            </button>
+            <button id="btn-select-current-dir" onclick="selectCurrentDirSkills(true)" class="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-md text-xs font-medium transition">
+              全选本级
+            </button>
+          </div>
+        </div>
+
+        <!-- Skills Container (Dynamic Sub-folders & Skills) -->
         <div id="skills-container" class="space-y-4">
           <div class="py-16 text-center text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">
             暂无扫描到的技能，请先在左侧添加 Git 仓库源并点击「拉取/更新」
@@ -356,9 +373,8 @@ HTML_PAGE = """<!DOCTYPE html>
     let currentSkills = [];
     let currentEditingSkill = '';
     let currentSelectedTag = 'all';
-    let currentViewMode = 'folder'; // 'folder' | 'grid'
-    let folderCollapsed = {};
-    let allFoldersCollapsed = false;
+    let currentViewMode = 'folder'; // 'folder' (逐层进入) | 'grid' (平铺)
+    let currentNavPath = ''; // 当前所在相对路径，'' 表示根目录
 
     async function init() {
       await loadConfig();
@@ -479,39 +495,127 @@ HTML_PAGE = """<!DOCTYPE html>
       currentViewMode = mode;
       const btnFolder = document.getElementById('view-btn-folder');
       const btnGrid = document.getElementById('view-btn-grid');
-      const toggleAllBtn = document.getElementById('btn-toggle-all-folders');
+      const breadcrumbNav = document.getElementById('breadcrumb-nav');
+
       if (mode === 'folder') {
-        btnFolder.className = "px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-600 text-white shadow-2xs transition";
-        btnGrid.className = "px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 hover:text-slate-900 transition";
-        toggleAllBtn.classList.remove('hidden');
+        btnFolder.className = "px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-600 text-white shadow-2xs transition flex items-center gap-1";
+        btnGrid.className = "px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 hover:text-slate-900 transition flex items-center gap-1";
+        breadcrumbNav.classList.remove('hidden');
       } else {
-        btnGrid.className = "px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-600 text-white shadow-2xs transition";
-        btnFolder.className = "px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 hover:text-slate-900 transition";
-        toggleAllBtn.classList.add('hidden');
+        btnGrid.className = "px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-600 text-white shadow-2xs transition flex items-center gap-1";
+        btnFolder.className = "px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 hover:text-slate-900 transition flex items-center gap-1";
+        breadcrumbNav.classList.add('hidden');
       }
       filterSkills();
     }
 
-    function toggleFolder(folderPath) {
-      folderCollapsed[folderPath] = !folderCollapsed[folderPath];
-      filterSkills();
-    }
-
-    function toggleAllFolders() {
-      allFoldersCollapsed = !allFoldersCollapsed;
-      const toggleAllBtn = document.getElementById('btn-toggle-all-folders');
-      toggleAllBtn.textContent = allFoldersCollapsed ? '全部展开' : '全部折叠';
-      // 遍历当前涉及的 folders
-      const folders = [...new Set(currentSkills.map(s => s.folder_path || '根目录'))];
-      folders.forEach(f => { folderCollapsed[f] = allFoldersCollapsed; });
-      filterSkills();
-    }
-
-    function selectFolderSkills(folderPath, checked) {
-      const container = document.querySelector(`[data-folder-container="${folderPath}"]`);
-      if (container) {
-        container.querySelectorAll('.skill-checkbox').forEach(cb => cb.checked = checked);
+    // 目录树下钻与导航
+    function navigateTo(path) {
+      currentNavPath = path.trim().replace(/^\\/+|\\/+$/g, '');
+      // 清空单次搜索以便聚焦在当前目录
+      const searchBox = document.getElementById('search-box');
+      if (searchBox.value) {
+        searchBox.value = '';
       }
+      filterSkills();
+    }
+
+    function navigateUp() {
+      if (!currentNavPath) return;
+      const parts = currentNavPath.split('/');
+      parts.pop();
+      navigateTo(parts.join('/'));
+    }
+
+    function renderBreadcrumbs(isSearchMode, searchKeyword) {
+      const trail = document.getElementById('breadcrumb-trail');
+      const backBtn = document.getElementById('btn-back-parent');
+      const selectCurBtn = document.getElementById('btn-select-current-dir');
+
+      if (isSearchMode) {
+        backBtn.classList.remove('hidden');
+        selectCurBtn.classList.add('hidden');
+        trail.innerHTML = `
+          <span class="text-slate-400">🔍 全局搜索:</span>
+          <span class="font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded font-mono">"${searchKeyword}"</span>
+          <button onclick="clearSearch()" class="text-slate-400 hover:text-slate-600 text-xs ml-2 underline">退出搜索</button>
+        `;
+        return;
+      }
+
+      if (!currentNavPath) {
+        backBtn.classList.add('hidden');
+        selectCurBtn.classList.add('hidden');
+        trail.innerHTML = `
+          <span class="font-semibold text-slate-800 flex items-center gap-1">
+            <span>🏠</span> 根目录 (所有顶级分类)
+          </span>
+        `;
+        return;
+      }
+
+      backBtn.classList.remove('hidden');
+      selectCurBtn.classList.remove('hidden');
+
+      const parts = currentNavPath.split('/');
+      let html = `
+        <button onclick="navigateTo('')" class="text-indigo-600 hover:underline flex items-center gap-1 font-medium">
+          <span>🏠</span> 根目录
+        </button>
+      `;
+
+      let accum = '';
+      parts.forEach((p, idx) => {
+        accum = accum ? (accum + '/' + p) : p;
+        const isLast = (idx === parts.length - 1);
+        if (isLast) {
+          html += `
+            <span class="text-slate-300">/</span>
+            <span class="font-semibold text-slate-800 font-mono flex items-center gap-1">
+              <span>📁</span> ${p}
+            </span>
+          `;
+        } else {
+          const pathTarget = accum;
+          html += `
+            <span class="text-slate-300">/</span>
+            <button onclick="navigateTo('${pathTarget}')" class="text-indigo-600 hover:underline font-mono">
+              ${p}
+            </button>
+          `;
+        }
+      });
+
+      trail.innerHTML = html;
+    }
+
+    function clearSearch() {
+      document.getElementById('search-box').value = '';
+      filterSkills();
+    }
+
+    function selectCurrentDirSkills(checked) {
+      // 勾选当前路径下的全部技能（含子孙技能）
+      const prefix = currentNavPath ? (currentNavPath + '/') : '';
+      const checkboxes = document.querySelectorAll('.skill-checkbox');
+      currentSkills.forEach(s => {
+        const fp = s.folder_path || '';
+        if (fp === currentNavPath || fp.startsWith(prefix)) {
+          const cb = document.querySelector(`.skill-checkbox[value="${s.name}"]`);
+          if (cb) cb.checked = checked;
+        }
+      });
+    }
+
+    function selectSubFolderSkills(subPath, checked) {
+      const prefix = subPath + '/';
+      currentSkills.forEach(s => {
+        const fp = s.folder_path || '';
+        if (fp === subPath || fp.startsWith(prefix)) {
+          const cb = document.querySelector(`.skill-checkbox[value="${s.name}"]`);
+          if (cb) cb.checked = checked;
+        }
+      });
     }
 
     async function loadSkills() {
@@ -522,7 +626,7 @@ HTML_PAGE = """<!DOCTYPE html>
       filterSkills();
     }
 
-    function renderSingleSkillCard(s) {
+    function renderSingleSkillCard(s, showPathBadge = false) {
       return `
         <div class="skill-card bg-white p-3.5 rounded-xl border ${s.installed ? 'border-indigo-300 bg-indigo-50/15' : 'border-slate-200'} shadow-2xs hover:shadow-xs transition relative flex flex-col justify-between" data-name="${s.name}" data-desc="${s.desc}" data-source="${s.source_id}">
           <div>
@@ -534,7 +638,8 @@ HTML_PAGE = """<!DOCTYPE html>
             </div>
             <div class="text-[11px] text-indigo-600 font-medium mb-2 flex items-center gap-1.5 flex-wrap">
               <span class="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded text-[10px] font-mono border border-indigo-100">🏷️ ${s.source_name}</span>
-              <button onclick="selectTag('${s.tag}')" class="bg-amber-50 hover:bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded text-[10px] font-mono border border-amber-200 cursor-pointer transition" title="所属目录标签: ${s.tag}">🏷️ ${s.tag}</button>
+              <button onclick="selectTag('${s.tag}')" class="bg-amber-50 hover:bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded text-[10px] font-mono border border-amber-200 cursor-pointer transition" title="所属直接目录名: ${s.tag}">🏷️ ${s.tag}</button>
+              ${showPathBadge && s.folder_path ? `<button onclick="navigateTo('${s.folder_path}')" class="bg-slate-100 hover:bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded text-[10px] font-mono transition" title="点击进入此所在目录">📂 ${s.folder_path}</button>` : ''}
             </div>
             <p class="text-[11px] text-slate-500 line-clamp-2 leading-relaxed mb-3" title="${s.desc}">${s.desc}</p>
           </div>
@@ -561,60 +666,134 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function renderSkills(skills) {
       const container = document.getElementById('skills-container');
+      const q = document.getElementById('search-box').value.trim();
+      const isSearching = Boolean(q);
+
+      renderBreadcrumbs(isSearching, q);
+
       document.getElementById('skill-count').textContent = `共 ${skills.length} 个技能`;
       if (skills.length === 0) {
         container.innerHTML = `<div class="py-16 text-center text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">未扫描到匹配条件的技能包</div>`;
         return;
       }
 
-      if (currentViewMode === 'grid') {
-        // 1. 平铺视图
+      // 如果处于全局平铺模式，或者正在全局搜索中：平铺展示
+      if (currentViewMode === 'grid' || isSearching) {
         container.innerHTML = `
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            ${skills.map(s => renderSingleSkillCard(s)).join('')}
+            ${skills.map(s => renderSingleSkillCard(s, isSearching)).join('')}
           </div>
         `;
-      } else {
-        // 2. 文件夹视图 (按真实目录分层分组折叠)
-        const groups = {};
-        skills.forEach(s => {
-          const folderKey = s.folder_path || '根目录 (skills)';
-          if (!groups[folderKey]) groups[folderKey] = [];
-          groups[folderKey].push(s);
-        });
-
-        const sortedFolders = Object.keys(groups).sort();
-        container.innerHTML = sortedFolders.map(f => {
-          const isCollapsed = Boolean(folderCollapsed[f]);
-          const list = groups[f];
-          const installedInFolder = list.filter(item => item.installed).length;
-          return `
-            <div class="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden transition" data-folder-container="${f}">
-              <!-- 文件夹头部 -->
-              <div class="px-4 py-2.5 bg-slate-50/90 hover:bg-slate-100/90 border-b border-slate-200/60 flex items-center justify-between cursor-pointer transition select-none" onclick="toggleFolder('${f}')">
-                <div class="flex items-center gap-2 min-w-0">
-                  <span class="text-slate-400 text-xs transition-transform duration-150 inline-block ${isCollapsed ? '' : 'rotate-90'}">▶</span>
-                  <span class="text-sm">📁</span>
-                  <span class="font-semibold text-xs text-slate-800 truncate font-mono">${f}</span>
-                  <span class="text-[10px] px-1.5 py-0.2 rounded bg-slate-200/60 text-slate-600 font-mono">${list.length} 个</span>
-                  ${installedInFolder > 0 ? `<span class="text-[10px] px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-700 font-mono">已挂载 ${installedInFolder}</span>` : ''}
-                </div>
-                <div class="flex items-center gap-2 text-xs shrink-0" onclick="event.stopPropagation()">
-                  <button onclick="selectFolderSkills('${f}', true)" class="text-indigo-600 hover:underline text-[11px]">全选本目录</button>
-                  <span class="text-slate-300">|</span>
-                  <button onclick="selectFolderSkills('${f}', false)" class="text-slate-500 hover:underline text-[11px]">清空</button>
-                </div>
-              </div>
-              <!-- 文件夹内列表 -->
-              <div class="p-3 ${isCollapsed ? 'hidden' : 'block'}">
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  ${list.map(s => renderSingleSkillCard(s)).join('')}
-                </div>
-              </div>
-            </div>
-          `;
-        }).join('');
+        return;
       }
+
+      // 核心交互：像文件树一样一层一层进入 (Folder Hierarchical Explorer)
+      // 计算当前 currentNavPath 层的直接子文件夹 与 直接归属技能
+      const prefix = currentNavPath ? (currentNavPath + '/') : '';
+      const subFolderMap = {}; // { subDirName: { fullPath: '...', totalSkills: N, installedCount: N } }
+      const directSkills = [];
+
+      skills.forEach(s => {
+        const fp = s.folder_path || '';
+        if (fp === currentNavPath) {
+          // 直接属于当前层的技能
+          directSkills.append ? directSkills.append(s) : directSkills.push(s);
+        } else if (fp.startsWith(prefix)) {
+          // 属于当前层的子目录
+          const remainder = fp.substring(prefix.length);
+          const firstSegment = remainder.split('/')[0];
+          const fullChildPath = prefix + firstSegment;
+          if (!subFolderMap[firstSegment]) {
+            subFolderMap[firstSegment] = { name: firstSegment, fullPath: fullChildPath, totalSkills: 0, installedCount: 0 };
+          }
+          subFolderMap[firstSegment].totalSkills += 1;
+          if (s.installed) subFolderMap[firstSegment].installedCount += 1;
+        }
+      });
+
+      const subFolders = Object.values(subFolderMap).sort((a, b) => a.name.localeCompare(b.name));
+
+      let contentHtml = '';
+
+      // 1. 渲染当前层的子文件夹列表（点击进入下一层）
+      if (subFolders.length > 0) {
+        contentHtml += `
+          <div>
+            <div class="text-xs font-semibold text-slate-700 mb-2.5 flex items-center justify-between">
+              <span class="flex items-center gap-1">
+                <span>📁 子目录列表</span>
+                <span class="text-slate-400 font-normal">(${subFolders.length} 个子文件夹，点击可进入下一级)</span>
+              </span>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mb-6">
+              ${subFolders.map(f => `
+                <div onclick="navigateTo('${f.fullPath}')" class="bg-white hover:bg-indigo-50/50 p-3.5 rounded-xl border border-slate-200 hover:border-indigo-300 shadow-2xs transition cursor-pointer flex items-center justify-between group select-none">
+                  <div class="flex items-center gap-2.5 min-w-0">
+                    <span class="text-2xl group-hover:scale-110 transition-transform shrink-0">📁</span>
+                    <div class="min-w-0">
+                      <div class="font-semibold text-xs text-slate-900 group-hover:text-indigo-600 truncate font-mono">${f.name}</div>
+                      <div class="text-[10px] text-slate-400 mt-0.5 truncate">
+                        ${f.totalSkills} 个技能 ${f.installedCount > 0 ? `· <span class="text-emerald-600 font-medium">已挂载 ${f.installedCount}</span>` : ''}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-1.5 shrink-0" onclick="event.stopPropagation()">
+                    <button onclick="selectSubFolderSkills('${f.fullPath}', true)" class="text-[10px] text-indigo-600 hover:bg-indigo-50 px-1.5 py-0.5 rounded transition" title="全选此目录下全部技能">全选</button>
+                    <span class="text-slate-300 group-hover:text-indigo-500 font-bold text-xs ml-1">→</span>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+      }
+
+      // 2. 渲染当前层包含的直属技能
+      if (directSkills.length > 0) {
+        contentHtml += `
+          <div>
+            <div class="text-xs font-semibold text-slate-700 mb-2.5 flex items-center justify-between">
+              <span class="flex items-center gap-1">
+                <span>📦 本级目录技能</span>
+                <span class="text-slate-400 font-normal">(${directSkills.length} 个)</span>
+              </span>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              ${directSkills.map(s => renderSingleSkillCard(s, false)).join('')}
+            </div>
+          </div>
+        `;
+      }
+
+      if (subFolders.length === 0 && directSkills.length === 0) {
+        contentHtml = `
+          <div class="py-16 text-center text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">
+            此目录下暂无技能。点击上方「⬅ 返回上一级」返回。
+          </div>
+        `;
+      }
+
+      container.innerHTML = contentHtml;
+    }
+
+    function filterSkills() {
+      const q = document.getElementById('search-box').value.toLowerCase().trim();
+      const srcFilter = document.getElementById('source-filter').value;
+      const tagFilter = currentSelectedTag;
+
+      const filtered = currentSkills.filter(s => {
+        const matchSearch = !q 
+          || s.name.toLowerCase().includes(q) 
+          || s.desc.toLowerCase().includes(q) 
+          || (s.tag && s.tag.toLowerCase().includes(q))
+          || (s.folder_path && s.folder_path.toLowerCase().includes(q));
+
+        const matchSrc = (srcFilter === 'all') || (s.source_id === srcFilter);
+        const matchTag = (tagFilter === 'all') || (s.tag === tagFilter);
+
+        return matchSearch && matchSrc && matchTag;
+      });
+      renderSkills(filtered);
     }
 
     function filterSkills() {
