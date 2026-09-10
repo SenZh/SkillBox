@@ -146,19 +146,11 @@ def scan_all_skills(cfg):
             if (p_root / "SKILL.md").exists() or (p_root / "skill.md").exists():
                 skill_name = p_root.name
                 rel_path = p_root.relative_to(sub_dir)
-                category = str(rel_path.parent).replace("\\", "/") if str(rel_path.parent) != "." else ""
+                
+                # 按照用户要求：tag 按照 skill 所属目录名计算 (例如 A/B/C 下，tag=C)
+                tag = p_root.parent.name if p_root.parent != sub_dir and p_root.parent.name else (sub_dir.name or "root")
+                folder_path = str(rel_path.parent).replace("\\", "/") if str(rel_path.parent) != "." else ""
                 desc, file_tags = parse_skill_metadata(p_root)
-
-                # 提取各级 tags
-                tag_list = []
-                if category:
-                    tag_list.append(category)
-                    for part in category.split("/"):
-                        if part and part not in tag_list:
-                            tag_list.append(part)
-                for ft in file_tags:
-                    if ft and ft not in tag_list:
-                        tag_list.append(ft)
 
                 custom_path = overrides.get(skill_name, "").strip()
                 target_install_dir = Path(custom_path).expanduser() if custom_path else default_install_to
@@ -167,8 +159,8 @@ def scan_all_skills(cfg):
 
                 all_skills.append({
                     "name": skill_name,
-                    "category": category,
-                    "tags": tag_list,
+                    "tag": tag,
+                    "folder_path": folder_path,
                     "source_id": src_id,
                     "source_name": src_name,
                     "source_branch": src.get("branch", "main"),
@@ -256,16 +248,26 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="space-y-3 mb-4">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div class="flex items-center gap-2 flex-wrap min-w-0">
-              <input id="search-box" oninput="filterSkills()" type="text" placeholder="搜索技能名称、简介、标签..." class="px-3 py-1.5 text-xs border border-slate-300 rounded-lg w-48 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <input id="search-box" oninput="filterSkills()" type="text" placeholder="搜索技能名称、简介、标签..." class="px-3 py-1.5 text-xs border border-slate-300 rounded-lg w-44 focus:outline-none focus:ring-2 focus:ring-indigo-500">
               <select id="source-filter" onchange="filterSkills()" class="px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 <option value="all">所有仓库源</option>
               </select>
               <select id="tag-filter" onchange="onTagSelectChange()" class="px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="all">所有 Tag / 分类</option>
+                <option value="all">所有 Tag / 所属目录</option>
               </select>
               <span id="skill-count" class="text-xs text-slate-500 shrink-0">共 0 个技能</span>
             </div>
+
+            <!-- View Switcher & Actions -->
             <div class="flex items-center gap-2 text-xs shrink-0">
+              <!-- 视图切换 -->
+              <div class="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs">
+                <button id="view-btn-folder" onclick="switchView('folder')" class="px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-600 text-white shadow-2xs transition">📁 文件夹</button>
+                <button id="view-btn-grid" onclick="switchView('grid')" class="px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 hover:text-slate-900 transition">▦ 平铺</button>
+              </div>
+              <span class="text-slate-300">|</span>
+              <button id="btn-toggle-all-folders" onclick="toggleAllFolders()" class="text-slate-500 hover:text-slate-800">全部折叠</button>
+              <span class="text-slate-300">|</span>
               <button onclick="selectAll(true)" class="text-indigo-600 hover:underline">全选</button>
               <span class="text-slate-300">|</span>
               <button onclick="selectAll(false)" class="text-indigo-600 hover:underline">清空</button>
@@ -278,9 +280,9 @@ HTML_PAGE = """<!DOCTYPE html>
           </div>
         </div>
 
-        <!-- Skills Grid -->
-        <div id="skills-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div class="col-span-2 py-16 text-center text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">
+        <!-- Skills Container (Dynamic Folder / Grid) -->
+        <div id="skills-container" class="space-y-4">
+          <div class="py-16 text-center text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">
             暂无扫描到的技能，请先在左侧添加 Git 仓库源并点击「拉取/更新」
           </div>
         </div>
@@ -354,6 +356,9 @@ HTML_PAGE = """<!DOCTYPE html>
     let currentSkills = [];
     let currentEditingSkill = '';
     let currentSelectedTag = 'all';
+    let currentViewMode = 'folder'; // 'folder' | 'grid'
+    let folderCollapsed = {};
+    let allFoldersCollapsed = false;
 
     async function init() {
       await loadConfig();
@@ -410,20 +415,16 @@ HTML_PAGE = """<!DOCTYPE html>
     function updateTagOptions(skills) {
       const tagCounts = {};
       skills.forEach(s => {
-        (s.tags || []).forEach(t => {
-          tagCounts[t] = (tagCounts[t] || 0) + 1;
-        });
+        const t = s.tag || 'root';
+        tagCounts[t] = (tagCounts[t] || 0) + 1;
       });
 
-      const sortedTags = Object.keys(tagCounts).sort((a, b) => {
-        // 先按包含斜杠的层级排，再按数量排
-        return tagCounts[b] - tagCounts[a];
-      });
+      const sortedTags = Object.keys(tagCounts).sort((a, b) => tagCounts[b] - tagCounts[a]);
 
       // 1. 更新下拉选择框
       const select = document.getElementById('tag-filter');
       const curVal = select.value;
-      select.innerHTML = `<option value="all">所有 Tag / 分类 (${skills.length})</option>` + sortedTags.map(t => `
+      select.innerHTML = `<option value="all">所有 Tag / 所属目录 (${skills.length})</option>` + sortedTags.map(t => `
         <option value="${t}">${t} (${tagCounts[t]})</option>
       `).join('');
       if (sortedTags.includes(curVal)) {
@@ -433,11 +434,11 @@ HTML_PAGE = """<!DOCTYPE html>
         currentSelectedTag = 'all';
       }
 
-      // 2. 渲染快捷胶囊栏 (取前 12 个最热门/主要分类)
+      // 2. 渲染快捷胶囊栏
       const pillsContainer = document.getElementById('tag-pills-bar');
-      const topTags = sortedTags.slice(0, 14);
+      const topTags = sortedTags.slice(0, 16);
       pillsContainer.innerHTML = `
-        <span class="text-slate-400 mr-1 shrink-0">快捷过滤:</span>
+        <span class="text-slate-400 mr-1 shrink-0">Tag 过滤:</span>
         <button onclick="selectTag('all')" class="px-2 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 ${currentSelectedTag === 'all' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
           全部 (${skills.length})
         </button>
@@ -474,6 +475,45 @@ HTML_PAGE = """<!DOCTYPE html>
       });
     }
 
+    function switchView(mode) {
+      currentViewMode = mode;
+      const btnFolder = document.getElementById('view-btn-folder');
+      const btnGrid = document.getElementById('view-btn-grid');
+      const toggleAllBtn = document.getElementById('btn-toggle-all-folders');
+      if (mode === 'folder') {
+        btnFolder.className = "px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-600 text-white shadow-2xs transition";
+        btnGrid.className = "px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 hover:text-slate-900 transition";
+        toggleAllBtn.classList.remove('hidden');
+      } else {
+        btnGrid.className = "px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-600 text-white shadow-2xs transition";
+        btnFolder.className = "px-2.5 py-1 rounded-md text-xs font-medium text-slate-600 hover:text-slate-900 transition";
+        toggleAllBtn.classList.add('hidden');
+      }
+      filterSkills();
+    }
+
+    function toggleFolder(folderPath) {
+      folderCollapsed[folderPath] = !folderCollapsed[folderPath];
+      filterSkills();
+    }
+
+    function toggleAllFolders() {
+      allFoldersCollapsed = !allFoldersCollapsed;
+      const toggleAllBtn = document.getElementById('btn-toggle-all-folders');
+      toggleAllBtn.textContent = allFoldersCollapsed ? '全部展开' : '全部折叠';
+      // 遍历当前涉及的 folders
+      const folders = [...new Set(currentSkills.map(s => s.folder_path || '根目录'))];
+      folders.forEach(f => { folderCollapsed[f] = allFoldersCollapsed; });
+      filterSkills();
+    }
+
+    function selectFolderSkills(folderPath, checked) {
+      const container = document.querySelector(`[data-folder-container="${folderPath}"]`);
+      if (container) {
+        container.querySelectorAll('.skill-checkbox').forEach(cb => cb.checked = checked);
+      }
+    }
+
     async function loadSkills() {
       const res = await fetch('/api/skills');
       const data = await res.json();
@@ -482,47 +522,99 @@ HTML_PAGE = """<!DOCTYPE html>
       filterSkills();
     }
 
-    function renderSkills(skills) {
-      const grid = document.getElementById('skills-grid');
-      document.getElementById('skill-count').textContent = `共 ${skills.length} 个技能`;
-      if (skills.length === 0) {
-        grid.innerHTML = `<div class="col-span-2 py-16 text-center text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">未扫描到匹配条件的技能包</div>`;
-        return;
-      }
-      grid.innerHTML = skills.map(s => `
-        <div class="skill-card bg-white p-4 rounded-xl border ${s.installed ? 'border-indigo-300 bg-indigo-50/15' : 'border-slate-200'} shadow-sm hover:shadow transition relative flex flex-col justify-between" data-name="${s.name}" data-desc="${s.desc}" data-source="${s.source_id}">
+    function renderSingleSkillCard(s) {
+      return `
+        <div class="skill-card bg-white p-3.5 rounded-xl border ${s.installed ? 'border-indigo-300 bg-indigo-50/15' : 'border-slate-200'} shadow-2xs hover:shadow-xs transition relative flex flex-col justify-between" data-name="${s.name}" data-desc="${s.desc}" data-source="${s.source_id}">
           <div>
-            <div class="flex items-start justify-between gap-2 mb-1.5">
-              <span class="font-semibold text-sm text-slate-900 truncate" title="${s.name}">${s.name}</span>
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <span class="font-semibold text-xs text-slate-900 truncate" title="${s.name}">${s.name}</span>
               <span class="text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0 ${s.installed ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}">
                 ${s.installed ? '已挂载' : '未安装'}
               </span>
             </div>
             <div class="text-[11px] text-indigo-600 font-medium mb-2 flex items-center gap-1.5 flex-wrap">
-              <span class="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded text-[10px] font-mono border border-indigo-100">🏷️ ${s.source_name} (${s.source_branch})</span>
-              ${s.category ? `<button onclick="selectTag('${s.category}')" class="bg-amber-50 hover:bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded text-[10px] font-mono border border-amber-200 cursor-pointer transition" title="点击筛选此分类">📂 ${s.category}</button>` : ''}
+              <span class="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded text-[10px] font-mono border border-indigo-100">🏷️ ${s.source_name}</span>
+              <button onclick="selectTag('${s.tag}')" class="bg-amber-50 hover:bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded text-[10px] font-mono border border-amber-200 cursor-pointer transition" title="所属目录标签: ${s.tag}">🏷️ ${s.tag}</button>
             </div>
-            <p class="text-xs text-slate-500 line-clamp-3 leading-relaxed mb-3" title="${s.desc}">${s.desc}</p>
+            <p class="text-[11px] text-slate-500 line-clamp-2 leading-relaxed mb-3" title="${s.desc}">${s.desc}</p>
           </div>
           <div>
             <!-- Install Target Info -->
-            <div class="p-2 bg-slate-50 rounded-lg border border-slate-100 text-[11px] text-slate-600 mb-3 flex items-center justify-between gap-2">
+            <div class="p-1.5 bg-slate-50 rounded-lg border border-slate-100 text-[10px] text-slate-600 mb-2.5 flex items-center justify-between gap-2">
               <div class="truncate flex items-center gap-1" title="目标路径: ${s.effective_install_to}">
-                <span class="text-slate-400 shrink-0">${s.is_custom ? '专属目录:' : '默认目录:'}</span>
-                <span class="font-mono text-[10px] text-slate-700 truncate">${s.effective_install_to}</span>
+                <span class="text-slate-400 shrink-0">${s.is_custom ? '专属:' : '默认:'}</span>
+                <span class="font-mono text-slate-700 truncate">${s.effective_install_to}</span>
               </div>
-              <button onclick="openPathModal('${s.name}', '${s.custom_install_to || ''}')" class="text-indigo-600 hover:text-indigo-800 text-[11px] shrink-0 font-medium hover:underline">修改</button>
+              <button onclick="openPathModal('${s.name}', '${s.custom_install_to || ''}')" class="text-indigo-600 hover:text-indigo-800 shrink-0 font-medium hover:underline">修改</button>
             </div>
             <!-- Action Bar -->
             <div class="pt-2 border-t border-slate-100 flex items-center justify-between">
-              <label class="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
-                <input type="checkbox" class="skill-checkbox rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4" value="${s.name}" ${s.installed ? 'checked' : ''}>
-                <span>启用并安装</span>
+              <label class="flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer select-none">
+                <input type="checkbox" class="skill-checkbox rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5" value="${s.name}" ${s.installed ? 'checked' : ''}>
+                <span class="text-xs">启用并安装</span>
               </label>
             </div>
           </div>
         </div>
-      `).join('');
+      `;
+    }
+
+    function renderSkills(skills) {
+      const container = document.getElementById('skills-container');
+      document.getElementById('skill-count').textContent = `共 ${skills.length} 个技能`;
+      if (skills.length === 0) {
+        container.innerHTML = `<div class="py-16 text-center text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">未扫描到匹配条件的技能包</div>`;
+        return;
+      }
+
+      if (currentViewMode === 'grid') {
+        // 1. 平铺视图
+        container.innerHTML = `
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            ${skills.map(s => renderSingleSkillCard(s)).join('')}
+          </div>
+        `;
+      } else {
+        // 2. 文件夹视图 (按真实目录分层分组折叠)
+        const groups = {};
+        skills.forEach(s => {
+          const folderKey = s.folder_path || '根目录 (skills)';
+          if (!groups[folderKey]) groups[folderKey] = [];
+          groups[folderKey].push(s);
+        });
+
+        const sortedFolders = Object.keys(groups).sort();
+        container.innerHTML = sortedFolders.map(f => {
+          const isCollapsed = Boolean(folderCollapsed[f]);
+          const list = groups[f];
+          const installedInFolder = list.filter(item => item.installed).length;
+          return `
+            <div class="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden transition" data-folder-container="${f}">
+              <!-- 文件夹头部 -->
+              <div class="px-4 py-2.5 bg-slate-50/90 hover:bg-slate-100/90 border-b border-slate-200/60 flex items-center justify-between cursor-pointer transition select-none" onclick="toggleFolder('${f}')">
+                <div class="flex items-center gap-2 min-w-0">
+                  <span class="text-slate-400 text-xs transition-transform duration-150 inline-block ${isCollapsed ? '' : 'rotate-90'}">▶</span>
+                  <span class="text-sm">📁</span>
+                  <span class="font-semibold text-xs text-slate-800 truncate font-mono">${f}</span>
+                  <span class="text-[10px] px-1.5 py-0.2 rounded bg-slate-200/60 text-slate-600 font-mono">${list.length} 个</span>
+                  ${installedInFolder > 0 ? `<span class="text-[10px] px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-700 font-mono">已挂载 ${installedInFolder}</span>` : ''}
+                </div>
+                <div class="flex items-center gap-2 text-xs shrink-0" onclick="event.stopPropagation()">
+                  <button onclick="selectFolderSkills('${f}', true)" class="text-indigo-600 hover:underline text-[11px]">全选本目录</button>
+                  <span class="text-slate-300">|</span>
+                  <button onclick="selectFolderSkills('${f}', false)" class="text-slate-500 hover:underline text-[11px]">清空</button>
+                </div>
+              </div>
+              <!-- 文件夹内列表 -->
+              <div class="p-3 ${isCollapsed ? 'hidden' : 'block'}">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  ${list.map(s => renderSingleSkillCard(s)).join('')}
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
     }
 
     function filterSkills() {
@@ -533,11 +625,11 @@ HTML_PAGE = """<!DOCTYPE html>
       const filtered = currentSkills.filter(s => {
         const matchSearch = s.name.toLowerCase().includes(q) 
           || s.desc.toLowerCase().includes(q) 
-          || (s.category && s.category.toLowerCase().includes(q))
-          || (s.tags && s.tags.some(t => t.toLowerCase().includes(q)));
+          || (s.tag && s.tag.toLowerCase().includes(q))
+          || (s.folder_path && s.folder_path.toLowerCase().includes(q));
 
         const matchSrc = (srcFilter === 'all') || (s.source_id === srcFilter);
-        const matchTag = (tagFilter === 'all') || (s.tags && s.tags.includes(tagFilter));
+        const matchTag = (tagFilter === 'all') || (s.tag === tagFilter);
 
         return matchSearch && matchSrc && matchTag;
       });
