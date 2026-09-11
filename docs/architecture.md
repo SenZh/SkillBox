@@ -1,6 +1,6 @@
 # SkillBox 架构设计文档 (Architecture)
 
-> 版本：v0.1  
+> 版本：v0.2  
 > 状态：正式发布  
 > 适用：AI Coding Agent（OpenCode、Claude Code、Cursor、Windsurf 等）技能管理与同步
 
@@ -80,7 +80,29 @@
   * 到期自动在 `.skillbox_cache/<source_id>` 下执行 `git fetch`、`git checkout <branch>`、`git pull`。
   * 由于目标目录采用符号链接，Git 拉取完成即意味着 Agent 端实时生效。
 
-### 3.4 前端交互与状态架构 (Frontend SPA)
+### 3.4 桌面托盘应用 (Desktop Tray App)
+
+`desktop_app.py` 提供 SkillBox 的常驻桌面客户端形态，取代「隐藏守护进程 + 外挂浏览器」旧模式。
+
+* **进程与线程模型（关键约束）**：
+  * **主线程**：运行 pywebview 的原生窗口消息循环（`webview.start()`），这是 GUI 框架的硬性要求；
+  * **HTTP 服务线程**：`daemon=True` 后台线程运行 `server.serve_forever()`，即服务内嵌于 App 进程；
+  * **托盘线程**：`pystray.Icon.run()` 运行在独立线程（pystray 需独占一个事件循环）；
+  * 三者的互调（托盘菜单点击 → 操作窗口 / 退出）通过实例方法与线程安全锁协调。
+* **关闭即缩托盘**：
+  * 绑定 pywebview `window.events.closing` 事件，回调中调用 `window.hide()` 并返回 `False`，
+    阻止默认的窗口销毁行为；应用不退出，服务继续运行；
+  * 仅托盘菜单「退出 SkillBox」触发 `quit_app()`：停服务 → 停托盘 → `os._exit(0)`。
+* **单实例与端口复用**：
+  * 启动时先 `find_running_service()` 探测已有服务（优先读 PID 文件，再扫描端口区间）；
+  * 命中则复用该端口、不再另起服务；未命中才 `start_server()` 内嵌新服务。
+* **依赖降级**：`check_dependencies()` 缺失 pywebview/pystray/Pillow 时，
+  `cli.py gui` 自动回退为「后台服务 + 浏览器应用窗口」，保证功能可用性。
+* **打包适配（PyInstaller）**：
+  * 区分「数据目录」与「资源目录」：`sys.frozen` 时数据目录 = exe 所在目录，
+    资源目录 = `sys._MEIPASS`（临时解包目录），避免配置/缓存写入临时目录而丢失。
+
+### 3.5 前端交互与状态架构 (Frontend SPA)
 * **单页双模式架构**：
   * `page-skills`：100% 满屏文件树浏览、搜索与勾选同步。
   * `page-settings`：仓库源配置、定时策略、全局默认路径配置。

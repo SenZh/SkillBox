@@ -31,7 +31,7 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(resp.status, 200)
         content = resp.read().decode("utf-8")
         self.assertIn("SkillBox", content)
-        self.assertIn("v0.1", content)
+        self.assertIn("v0.2", content)
         self.assertIn("breadcrumb-nav", content)
 
     def test_get_config(self):

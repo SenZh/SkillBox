@@ -10,12 +10,45 @@ from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
-__version__ = "0.1.0"
-BASE_DIR = Path(__file__).resolve().parent
+__version__ = "0.2.0"
+
+def _resolve_base_dir():
+    """
+    解析运行期的「数据目录」（config.json / 缓存 / 日志 / PID 落盘位置）。
+    - 源码直接运行：项目根目录（app.py 所在目录）
+    - PyInstaller 打包运行：exe 同级目录（数据随程序存放，不写系统盘用户目录）
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+def _resolve_code_dir():
+    """
+    解析「代码/安装目录」（app.py、skillbox.bat、cli.py 等可执行脚本所在位置）。
+    - 源码直接运行：项目根目录（app.py 所在目录）
+    - PyInstaller 打包运行：exe 所在目录
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+def _resolve_resource_dir():
+    """
+    解析「资源目录」（随包分发的只读资源：assets / builtin_skills）。
+    - 源码直接运行：项目根目录
+    - PyInstaller 打包运行：临时解包目录 sys._MEIPASS
+    """
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    return Path(__file__).resolve().parent
+
+BASE_DIR = _resolve_base_dir()      # 数据目录（~/.skillbox）
+CODE_DIR = _resolve_code_dir()      # 代码/安装目录
+RESOURCE_DIR = _resolve_resource_dir()
 CONFIG_FILE = BASE_DIR / "config.json"
 CACHE_BASE_DIR = BASE_DIR / ".skillbox_cache"
-BUILTIN_SKILLS_DIR = BASE_DIR / "builtin_skills"
-ASSETS_DIR = BASE_DIR / "assets"
+BUILTIN_SKILLS_DIR = RESOURCE_DIR / "builtin_skills"
+ASSETS_DIR = RESOURCE_DIR / "assets"
 LOG_FILE = BASE_DIR / "skillbox.log"
 
 def log(msg, level="INFO"):
@@ -94,26 +127,44 @@ def get_autostart_status():
             return False
     return _autostart_unix_file().exists()
 
-def set_autostart(enable: bool):
-    """注册或注销开机静默自启动（跨平台，均无需管理员权限）
+def _autostart_launch_target():
+    """
+    返回开机自启的目标启动命令（不含参数）与工作目录：
+    优先使用打包好的桌面托盘应用 SkillBox.exe（无需本机 Python、图标与进程名正确）；
+    否则回退到 pythonw/python + desktop_app.py。
+    返回: (program: str, script: str, workdir: str, startup_arg: str)
+    """
+    exe_candidates = [
+        CODE_DIR / "SkillBox.exe",
+        CODE_DIR / "dist" / "SkillBox.exe",
+    ]
+    for exe in exe_candidates:
+        if exe.exists():
+            return str(exe), "", str(exe.parent), "--startup"
 
+    python_exe = sys.executable
+    if sys.platform == "win32" and python_exe.lower().endswith("python.exe"):
+        pythonw = python_exe[:-len("python.exe")] + "pythonw.exe"
+        if os.path.exists(pythonw):
+            python_exe = pythonw
+    app_script = str((CODE_DIR / "desktop_app.py").resolve())
+    return python_exe, app_script, str(CODE_DIR), "--startup"
+
+def set_autostart(enable: bool):
+    """注册或注销开机自启动（跨平台，均无需管理员权限）
+
+    开机后自动拉起**桌面托盘应用**（静默进入系统托盘，不弹出窗口）：
     - Windows: 注册表 HKCU\\...\\Run
     - Linux:   systemd user service (~/.config/systemd/user/skillbox.service)
     - macOS:   LaunchAgent (~/Library/LaunchAgents/com.skillbox.agent.plist)
 
     成功返回 True；失败抛出 RuntimeError（由调用方负责向用户回传真实原因）。
     """
+    program, script, workdir, startup_arg = _autostart_launch_target()
+
     if sys.platform == "win32":
         import winreg
-        python_exe = sys.executable
-        if python_exe.lower().endswith("python.exe"):
-            pythonw_exe = python_exe[:-len("python.exe")] + "pythonw.exe"
-        else:
-            pythonw_exe = python_exe
-        if not os.path.exists(pythonw_exe):
-            pythonw_exe = python_exe
-        app_script = str((BASE_DIR / "app.py").resolve())
-        cmd_str = f'"{pythonw_exe}" "{app_script}" --silent'
+        cmd_str = f'"{program}"' + (f' "{script}"' if script else "") + f" {startup_arg}"
         try:
             with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_SET_VALUE) as key:
                 if enable:
@@ -129,8 +180,6 @@ def set_autostart(enable: bool):
 
     # Unix 平台
     cfg_file = _autostart_unix_file()
-    python_exe = sys.executable
-    app_script = str((BASE_DIR / "app.py").resolve())
     if not enable:
         try:
             if cfg_file.exists():
@@ -145,6 +194,7 @@ def set_autostart(enable: bool):
     try:
         cfg_file.parent.mkdir(parents=True, exist_ok=True)
         if sys.platform == "darwin":
+            script_arg = f"        <string>{script}</string>\n" if script else ""
             content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -152,12 +202,11 @@ def set_autostart(enable: bool):
     <key>Label</key><string>com.skillbox.agent</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{python_exe}</string>
-        <string>{app_script}</string>
-        <string>--silent</string>
+        <string>{program}</string>
+{script_arg}        <string>{startup_arg}</string>
     </array>
     <key>RunAtLoad</key><true/>
-    <key>WorkingDirectory</key><string>{BASE_DIR}</string>
+    <key>WorkingDirectory</key><string>{workdir}</string>
 </dict>
 </plist>
 """
@@ -165,14 +214,15 @@ def set_autostart(enable: bool):
             subprocess.run(["launchctl", "unload", str(cfg_file)], capture_output=True)
             subprocess.run(["launchctl", "load", str(cfg_file)], capture_output=True)
         else:
+            exec_cmd = f"{program}" + (f" {script}" if script else "") + f" {startup_arg}"
             content = f"""[Unit]
 Description=SkillBox AI Skill Manager
 After=network.target
 
 [Service]
 Type=simple
-ExecStart={python_exe} {app_script} --silent
-WorkingDirectory={BASE_DIR}
+ExecStart={exec_cmd}
+WorkingDirectory={workdir}
 Restart=on-failure
 
 [Install]
@@ -519,13 +569,14 @@ def ensure_cli_installed():
     """
     确保 skillbox 命令已注册到当前用户 PATH（HKCU\\Environment），无需管理员权限。
     服务启动时自动调用：未安装则自动安装，已安装则跳过。幂等且失败不阻断服务启动。
+    仅当运行目录内存在 skillbox.bat（源码运行）时注册；打包 exe 场景不注册（CLI 面向 Agent，需本机 Python）。
     """
     if sys.platform != "win32":
         return False
-    launcher = BASE_DIR / "skillbox.bat"
+    launcher = CODE_DIR / "skillbox.bat"
     if not launcher.exists():
         return False
-    bin_dir = str(BASE_DIR)
+    bin_dir = str(CODE_DIR)
     try:
         import winreg
         try:
@@ -659,7 +710,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div class="flex items-center gap-2.5 shrink-0 cursor-pointer" onclick="switchPage('skills')">
           <img src="/assets/icon-simple.svg" alt="SkillBox" class="w-8 h-8 rounded-lg shadow-xs">
           <span class="font-bold text-lg text-slate-900 tracking-tight">SkillBox</span>
-          <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100 font-mono font-medium">v0.1</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100 font-mono font-medium">v0.2</span>
         </div>
 
         <!-- 页面 Tab 切换导航 -->
@@ -700,28 +751,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
           <!-- Search & Selects -->
           <div class="flex items-center gap-2.5 flex-wrap min-w-0">
-            <!-- Search -->
+            <!-- Search (放大版) -->
             <div class="relative">
-              <span class="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400 text-xs">🔍</span>
-              <input id="search-box" oninput="filterSkills()" type="text" placeholder="全局搜索技能、Tag、目录..." class="pl-8 pr-7 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl w-56 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition">
-              <button id="btn-clear-search" onclick="clearSearch()" class="absolute inset-y-0 right-0 pr-2.5 flex items-center text-slate-400 hover:text-slate-600 text-xs hidden">✕</button>
+              <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400 text-sm">🔍</span>
+              <input id="search-box" oninput="filterSkills()" type="text" placeholder="全局搜索技能、目录..." class="pl-10 pr-9 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl w-72 sm:w-96 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition">
+              <button id="btn-clear-search" onclick="clearSearch()" class="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-600 text-sm hidden">✕</button>
             </div>
 
             <!-- Repo Source Filter -->
-            <select id="source-filter" onchange="filterSkills()" class="px-3 py-1.5 text-xs border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-700 font-medium">
+            <select id="source-filter" onchange="filterSkills()" class="px-3 py-2 text-xs border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-700 font-medium">
               <option value="all">所有仓库源</option>
-            </select>
-
-            <!-- Tag Filter -->
-            <select id="tag-filter" onchange="onTagSelectChange()" class="px-3 py-1.5 text-xs border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-700 font-medium">
-              <option value="all">所有 Tag 目录</option>
-            </select>
-
-            <!-- Status Filter (过滤显示已挂载技能) -->
-            <select id="status-filter" onchange="filterSkills()" class="px-3 py-1.5 text-xs border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-700 font-medium">
-              <option value="all">所有挂载状态</option>
-              <option value="installed">✓ 仅已挂载 (Installed)</option>
-              <option value="uninstalled">○ 仅未挂载 (Unmounted)</option>
             </select>
 
             <span id="skill-count" class="text-xs text-slate-400 font-mono shrink-0 ml-1">0 个技能</span>
@@ -744,9 +783,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
           </div>
         </div>
 
-        <!-- Tag Pills (快捷胶囊栏) -->
-        <div id="tag-pills-bar" class="flex items-center gap-1.5 flex-wrap text-[11px] pt-2 border-t border-slate-100">
-          <!-- 动态注入 -->
+        <!-- 挂载状态 Tab (与视图切换一致的样式) -->
+        <div class="pt-2 border-t border-slate-100">
+          <div class="inline-flex rounded-xl border border-slate-200 bg-slate-100/60 p-0.5">
+            <button id="status-tab-all" onclick="switchStatus('all')" class="px-3 py-1 rounded-lg text-xs font-semibold bg-white text-indigo-600 shadow-xs transition flex items-center gap-1">
+              全部挂载状态
+            </button>
+            <button id="status-tab-installed" onclick="switchStatus('installed')" class="px-3 py-1 rounded-lg text-xs font-medium text-slate-600 hover:text-slate-900 transition flex items-center gap-1">
+              <span>✓</span> 仅已挂载
+            </button>
+            <button id="status-tab-uninstalled" onclick="switchStatus('uninstalled')" class="px-3 py-1 rounded-lg text-xs font-medium text-slate-600 hover:text-slate-900 transition flex items-center gap-1">
+              <span>○</span> 仅未挂载
+            </button>
+          </div>
         </div>
       </div>
 
@@ -817,14 +866,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </div>
       </div>
 
-      <!-- Section 3: Windows Auto-start on Boot -->
+      <!-- Section 3: Auto-start on Boot -->
       <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
         <div class="flex items-center justify-between gap-4">
           <div class="space-y-1">
             <h2 class="text-base font-bold text-slate-900 flex items-center gap-2">
-              <span>🚀</span> Windows 开机静默自启服务
+              <span>🚀</span> 开机自动启动
             </h2>
-            <p class="text-xs text-slate-500">开机登录 Windows 时自动在后台静默启动 SkillBox 常驻服务（注册于当前用户注册表，无需管理员权限，开机不弹出黑框与浏览器，后台静默自动拉取更新）。</p>
+            <p class="text-xs text-slate-500">开机登录系统时自动启动 SkillBox 桌面托盘应用（静默进入右下角系统托盘，不弹出窗口；注册于当前用户，无需管理员权限，后台自动拉取更新）。</p>
           </div>
           <!-- Toggle Switch -->
           <label class="relative inline-flex items-center cursor-pointer shrink-0">
@@ -1005,7 +1054,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     let globalConfig = { default_install_to: '', sources: [], skill_overrides: {} };
     let currentSkills = [];
     let currentEditingSkill = '';
-    let currentSelectedTag = 'all';
+    let currentStatusFilter = 'all'; // 'all' | 'installed' | 'uninstalled'
     let currentViewMode = 'folder'; // 'folder' | 'grid'
     let currentNavPath = ''; // 相对路径，'' 为根目录
     let activePage = 'skills'; // 'skills' | 'settings'
@@ -1067,7 +1116,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         });
         const data = await res.json();
         if (data.ok) {
-          showToast(data.enabled ? '已成功注册 Windows 开机静默自启！' : '已取消 Windows 开机自启。');
+          showToast(data.enabled ? '已开启开机自动启动（静默进入系统托盘）！' : '已关闭开机自动启动。');
           if (toggle) toggle.checked = Boolean(data.enabled);
         } else {
           if (toggle) toggle.checked = Boolean(data.enabled);
@@ -1148,67 +1197,26 @@ HTML_PAGE = r"""<!DOCTYPE html>
       }
     }
 
-    function updateTagOptions(skills) {
-      const tagCounts = {};
-      skills.forEach(s => {
-        const t = s.tag || 'root';
-        tagCounts[t] = (tagCounts[t] || 0) + 1;
-      });
-
-      const sortedTags = Object.keys(tagCounts).sort((a, b) => tagCounts[b] - tagCounts[a]);
-
-      // 1. 下拉菜单
-      const select = document.getElementById('tag-filter');
-      const curVal = select.value;
-      select.innerHTML = `<option value="all">所有 Tag 目录 (${skills.length})</option>` + sortedTags.map(t => `
-        <option value="${t}">${t} (${tagCounts[t]})</option>
-      `).join('');
-      if (sortedTags.includes(curVal)) {
-        select.value = curVal;
-      } else {
-        select.value = 'all';
-        currentSelectedTag = 'all';
-      }
-
-      // 2. 快捷胶囊栏 (取前 15 个分类)
-      const pillsContainer = document.getElementById('tag-pills-bar');
-      const topTags = sortedTags.slice(0, 15);
-      pillsContainer.innerHTML = `
-        <span class="text-slate-400 mr-1 shrink-0 font-medium">快捷过滤:</span>
-        <button onclick="selectTag('all')" class="px-2.5 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 ${currentSelectedTag === 'all' ? 'bg-indigo-600 text-white shadow-2xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
-          全部 (${skills.length})
-        </button>
-      ` + topTags.map(t => `
-        <button onclick="selectTag('${t}')" class="px-2.5 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 ${currentSelectedTag === t ? 'bg-indigo-600 text-white shadow-2xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
-          ${t} <span class="opacity-75">(${tagCounts[t]})</span>
-        </button>
-      `).join('');
-    }
-
-    function onTagSelectChange() {
-      currentSelectedTag = document.getElementById('tag-filter').value;
-      updateTagPillsHighlight();
+    // 挂载状态 Tab 切换 (样式与视图切换保持一致)
+    function switchStatus(mode) {
+      currentStatusFilter = mode;
+      const tabs = {
+        all: document.getElementById('status-tab-all'),
+        installed: document.getElementById('status-tab-installed'),
+        uninstalled: document.getElementById('status-tab-uninstalled'),
+      };
+      const activeCls = "px-3 py-1 rounded-lg text-xs font-semibold bg-white text-indigo-600 shadow-xs transition flex items-center gap-1";
+      const idleCls = "px-3 py-1 rounded-lg text-xs font-medium text-slate-600 hover:text-slate-900 transition flex items-center gap-1";
+      Object.keys(tabs).forEach(k => { if (tabs[k]) tabs[k].className = (k === mode) ? activeCls : idleCls; });
       filterSkills();
     }
 
+    // 点击技能卡片上的 Tag 徽标：直接以该 Tag 关键词过滤（不再提供全局 Tag 下拉/快捷胶囊）
     function selectTag(tag) {
-      currentSelectedTag = tag;
-      document.getElementById('tag-filter').value = tag;
-      updateTagPillsHighlight();
+      const searchBox = document.getElementById('search-box');
+      searchBox.value = tag;
+      document.getElementById('btn-clear-search').classList.remove('hidden');
       filterSkills();
-    }
-
-    function updateTagPillsHighlight() {
-      document.querySelectorAll('#tag-pills-bar button').forEach(btn => {
-        const text = btn.textContent.trim();
-        if (currentSelectedTag === 'all' && text.startsWith('全部')) {
-          btn.className = "px-2.5 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 bg-indigo-600 text-white shadow-2xs";
-        } else if (text.startsWith(currentSelectedTag + ' ') || text === currentSelectedTag) {
-          btn.className = "px-2.5 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 bg-indigo-600 text-white shadow-2xs";
-        } else {
-          btn.className = "px-2.5 py-0.5 rounded-full text-[10px] font-medium transition shrink-0 bg-slate-100 text-slate-600 hover:bg-slate-200";
-        }
-      });
     }
 
     function switchView(mode) {
@@ -1378,7 +1386,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
       // 首次加载或同步后，将所有已挂载的 skills 记录在 selectedSkills 集合中
       selectedSkills = new Set(currentSkills.filter(s => s.installed).map(s => s.name));
       
-      updateTagOptions(currentSkills);
       filterSkills();
       updateSelectedCounter();
     }
@@ -1578,8 +1585,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     function filterSkills() {
       const q = document.getElementById('search-box').value.toLowerCase().trim();
       const srcFilter = document.getElementById('source-filter').value;
-      const tagFilter = currentSelectedTag;
-      const statusFilter = (document.getElementById('status-filter') || {}).value || 'all';
+      const statusFilter = currentStatusFilter;
 
       const filtered = currentSkills.filter(s => {
         const matchSearch = !q 
@@ -1589,13 +1595,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
           || (s.folder_path && s.folder_path.toLowerCase().includes(q));
 
         const matchSrc = (srcFilter === 'all') || (s.source_id === srcFilter);
-        const matchTag = (tagFilter === 'all') || (s.tag === tagFilter);
 
         let matchStatus = true;
         if (statusFilter === 'installed') matchStatus = s.installed;
         else if (statusFilter === 'uninstalled') matchStatus = !s.installed;
 
-        return matchSearch && matchSrc && matchTag && matchStatus;
+        return matchSearch && matchSrc && matchStatus;
       });
       renderSkills(filtered);
     }
@@ -2008,6 +2013,20 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"enabled": status, "platform": sys.platform}).encode("utf-8"))
+        elif url.path == "/api/activate":
+            # 由「重复启动的第二个实例」调用：请求当前实例呼出主窗口（单实例唤醒）
+            handled = False
+            try:
+                cb = ACTIVATE_CALLBACK.get("fn")
+                if callable(cb):
+                    cb()
+                    handled = True
+            except Exception as e:
+                log(f"[Activate] 呼出窗口失败: {e}", level="ERROR")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "handled": handled}).encode("utf-8"))
         elif url.path == "/api/resolve":
             from urllib.parse import parse_qs
             params = parse_qs(url.query)
@@ -2416,27 +2435,36 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 PID_FILE = BASE_DIR / ".skillbox.pid"
 
-def main():
-    base_port = 7860
-    max_port = 7880
-    server = None
-    actual_port = base_port
+# 单实例唤醒回调：桌面应用启动时注册，/api/activate 触发时呼出主窗口
+ACTIVATE_CALLBACK = {"fn": None}
 
+def create_server(base_port=7860, max_port=7880):
+    """
+    在 [base_port, max_port) 范围内探测一个空闲端口并创建 HTTP 服务实例。
+    返回: (server, actual_port)；全部端口被占用时返回 (None, None)。
+    """
     for port in range(base_port, max_port):
         try:
             server = ThreadingHTTPServer(("127.0.0.1", port), RequestHandler)
-            actual_port = port
-            break
+            return server, port
         except OSError:
             continue
+    return None, None
 
+def start_server(base_port=7860, max_port=7880):
+    """
+    探测端口、创建服务、写入 PID 文件，并完成启动期的初始化工作
+    （定时更新线程、内置技能挂载、CLI 命令注册）。
+    不阻塞，调用方自行决定如何 serve（前台 serve_forever 或后台线程）。
+    返回: (server, actual_port)；启动失败时返回 (None, None)。
+    """
+    server, actual_port = create_server(base_port, max_port)
     if not server:
         print(f"[!] 无法启动服务：端口 {base_port}~{max_port} 均被占用。", flush=True)
-        sys.exit(1)
+        return None, None
 
     url = f"http://127.0.0.1:{actual_port}"
     print(f"[*] SkillBox 服务已成功启动: {url}", flush=True)
-    print(f"[*] 提示：按 Ctrl+C 可停止服务。", flush=True)
 
     # 写入当前进程 PID 和实际监听端口
     try:
@@ -2459,6 +2487,30 @@ def main():
     except Exception as e:
         print(f"[!] 命令注册异常: {e}", flush=True)
 
+    return server, actual_port
+
+def stop_server(server):
+    """安全关闭 HTTP 服务并清理 PID 文件"""
+    try:
+        if server:
+            server.shutdown()
+            server.server_close()
+    except Exception:
+        pass
+    if PID_FILE.exists():
+        try:
+            PID_FILE.unlink()
+        except Exception:
+            pass
+
+def main():
+    server, actual_port = start_server()
+    if not server:
+        sys.exit(1)
+
+    url = f"http://127.0.0.1:{actual_port}"
+    print(f"[*] 提示：按 Ctrl+C 可停止服务。", flush=True)
+
     is_silent = "--silent" in sys.argv or "--no-browser" in sys.argv
     if not is_silent:
         def delayed_open():
@@ -2471,11 +2523,7 @@ def main():
     except KeyboardInterrupt:
         print("\n[!] SkillBox 服务已安全退出。", flush=True)
     finally:
-        if PID_FILE.exists():
-            try:
-                PID_FILE.unlink()
-            except Exception:
-                pass
+        stop_server(server)
 
 if __name__ == "__main__":
     main()

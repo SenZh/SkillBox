@@ -20,8 +20,8 @@ class TestAutostart(unittest.TestCase):
         status_after_disable = get_autostart_status()
         self.assertFalse(status_after_disable, "注销后状态应当为 False")
 
-    def test_registry_value_preserves_path_case(self):
-        """注册表中写入的命令应保留 pythonw.exe 路径原始大小写，且可回读"""
+    def test_registry_command_targets_desktop_app(self):
+        """自启命令应指向桌面托盘应用（SkillBox.exe 或 desktop_app.py）并以 --startup 静默进托盘"""
         if sys.platform != "win32":
             self.skipTest("仅限 Windows 平台测试")
         import winreg
@@ -30,8 +30,16 @@ class TestAutostart(unittest.TestCase):
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_READ) as key:
                 cmd_str, _ = winreg.QueryValueEx(key, AUTOSTART_APP_NAME)
-            self.assertIn("pythonw.exe", cmd_str.lower(), "自启命令应使用 pythonw.exe 静默运行")
-            self.assertNotIn("python.exe\"", cmd_str.lower(), "不应回退到非静默的 python.exe")
+            low = cmd_str.lower()
+            # 目标必须是桌面托盘应用：打包 exe 或 desktop_app.py，两者之一
+            self.assertTrue(
+                ("skillbox.exe" in low) or ("desktop_app.py" in low),
+                f"自启命令应指向桌面托盘应用（SkillBox.exe / desktop_app.py），实际: {cmd_str}",
+            )
+            # 开机启动时应静默进入托盘
+            self.assertIn("--startup", low, "自启命令应携带 --startup 以静默进入系统托盘")
+            # 不应再回退到旧的后台隐藏服务入口
+            self.assertNotIn("app.py\" --silent", low, "不应再使用旧的后台服务静默入口")
         finally:
             set_autostart(False)
 

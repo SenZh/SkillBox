@@ -121,17 +121,24 @@ def get_start_menu_dir():
 
 def _launcher_command():
     """
-    返回用于快捷方式的启动命令（不含 URL 参数）：
-    - Windows: pythonw.exe app.py --silent （无黑窗后台启动）
-    - macOS/Linux: python3 app.py --silent
+    返回用于快捷方式的启动命令（不含 URL 参数）。
+    若已通过 PyInstaller 打包出 SkillBox.exe，则优先直接指向该 exe
+    （图标/进程名最正确、无需本机 Python）；否则回退到 python(w) desktop_app.py。
+    桌面托盘应用会内嵌托管服务并展示原生 WebView 窗口，关闭窗口即缩到系统托盘。
     """
+    # 优先：打包好的独立可执行文件
+    for exe_name in ("SkillBox.exe",):
+        exe_path = BASE_DIR / "dist" / exe_name
+        if exe_path.exists():
+            return str(exe_path), ""
+
     python_exe = sys.executable
     if sys.platform == "win32":
         if python_exe.lower().endswith("python.exe"):
             pythonw = python_exe[:-len("python.exe")] + "pythonw.exe"
             if os.path.exists(pythonw):
                 python_exe = pythonw
-    app_script = str((BASE_DIR / "app.py").resolve())
+    app_script = str((BASE_DIR / "desktop_app.py").resolve())
     return python_exe, app_script
 
 
@@ -156,22 +163,21 @@ def _create_shortcut_windows(target_dir):
     target_dir = Path(target_dir)
     if not target_dir.exists():
         return None
-    # 快捷方式指向 一个一次性引导：启动服务后打开应用窗口
+    # 快捷方式直接指向桌面托盘应用：内嵌服务 + 原生窗口 + 系统托盘常驻
     python_exe, app_script = _launcher_command()
     lnk_path = target_dir / "SkillBox.lnk"
     # 优先使用自带图标，缺失时回退 python 可执行文件图标
     icon = str(ICON_ICO) if ICON_ICO.exists() else (python_exe if os.path.exists(python_exe) else "")
-    # 用 cli.py 的 gui 命令作为入口：启动服务并开应用窗口
-    cli_script = str((BASE_DIR / "cli.py").resolve())
+    args = f'"{app_script}"' if app_script else ""
     ps = (
         "$ws = New-Object -ComObject WScript.Shell; "
         f"$sc = $ws.CreateShortcut('{lnk_path}'); "
         f"$sc.TargetPath = '{python_exe}'; "
-        f"$sc.Arguments = '\"{cli_script}\" gui'; "
+        f"$sc.Arguments = '{args}'; "
         f"$sc.WorkingDirectory = '{BASE_DIR}'; "
         f"$sc.IconLocation = '{icon}'; "
         "$sc.Description = 'SkillBox - AI 技能管理器'; "
-        "$sc.WindowStyle = 7; "
+        "$sc.WindowStyle = 1; "
         "$sc.Save()"
     )
     try:
@@ -197,7 +203,7 @@ def _create_shortcut_linux():
         "Type=Application\n"
         "Name=SkillBox\n"
         "Comment=AI 技能管理器\n"
-        f"Exec={python_exe} {BASE_DIR / 'cli.py'} gui\n"
+        f"Exec={python_exe} {app_script}".rstrip() + "\n"
         f"Path={BASE_DIR}\n"
         f"Icon={ICON_PNG if ICON_PNG.exists() else 'applications-system'}\n"
         "Terminal=false\n"
@@ -219,10 +225,11 @@ def _create_shortcut_linux():
 def _create_shortcut_macos():
     python_exe, app_script = _launcher_command()
     command_file = Path.home() / "Desktop" / "SkillBox.command"
+    launch = f'"{python_exe}"' + (f' "{app_script}"' if app_script else "")
     content = (
         "#!/bin/bash\n"
         f'cd "{BASE_DIR}"\n'
-        f'"{python_exe}" "{BASE_DIR / "cli.py"}" gui\n'
+        f'{launch}\n'
     )
     try:
         command_file.write_text(content, encoding="utf-8")

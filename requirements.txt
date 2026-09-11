@@ -1,0 +1,11 @@
+# SkillBox 运行时依赖
+#
+# 仅「桌面托盘应用」(desktop_app.py) 需要以下依赖；
+# 纯 CLI 功能（resolve / commit / update / 服务启停）仅依赖 Python 标准库，无需安装。
+#
+# 安装：pip install -r requirements.txt
+# 未安装时，`skillbox gui` 会自动降级为「后台服务 + 浏览器窗口」模式，功能不受影响。
+
+pywebview>=4.0
+pystray>=0.19
+Pillow>=9.0

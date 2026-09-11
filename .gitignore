@@ -3,8 +3,10 @@ config.json
 skillbox.log
 .skillbox_cache/
 .skillbox.pid
+.skillbox.lock
 __pycache__/
 *.pyc
+*.pyo
 
 # 系统临时文件
 .DS_Store
@@ -12,3 +14,24 @@ Thumbs.db
 
 # 编辑器临时产物
 .openchamber/
+.vscode/
+.idea/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# PyInstaller 打包产物（build/ 临时目录 + dist/ 可执行文件，通常不入库）
+build/
+dist/
+*.spec
+
+# Release 成果物输出目录
+release/
+
+# 运行时产生的数据文件（若从 dist/ 运行）
+dist/.skillbox.pid
+dist/config.json
+dist/skillbox.log
+dist/.skillbox_cache/

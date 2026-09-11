@@ -4,7 +4,7 @@
 > 支持多 Git 仓库与独立分支、像文件树一样逐层进入浏览、目录级与单 Skill 专属挂载路径、符号链接零拷贝秒级挂载、统一 CLI 控制中枢与后台自动更新。
 
 [![GitHub Repo](https://img.shields.io/badge/GitHub-SenZh%2FSkillBox-181717.svg?logo=github)](https://github.com/SenZh/SkillBox)
-[![Version](https://img.shields.io/badge/version-v0.1-blue.svg)](https://github.com/SenZh/SkillBox/releases)
+[![Version](https://img.shields.io/badge/version-v0.2-blue.svg)](https://github.com/SenZh/SkillBox/releases)
 [![Python](https://img.shields.io/badge/python-3.8+-brightgreen.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-orange.svg)](#)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -39,8 +39,15 @@
   - **目录级统一挂载路径**（第二优先级，自底向上多级继承）：为任意目录（如 `business/bind-center` 或 `business`）指定专属目录，该目录下所有技能自动继承统一挂载；
   - **全局默认安装路径**（保底优先级）：统一未指定目录的默认安装位置（如 `~/.agents/skills`）；
   - **修改路径全自动平滑迁移**：无论修改全局默认还是某个目录的挂载路径，系统自动在旧位置解绑并在新位置重建软链接，无需人工重新勾选。
+- 🖥️ **桌面托盘客户端 (Desktop Tray App)**：
+  - 基于系统原生 WebView 承载控制台，观感接近原生桌面应用（不再外挂浏览器窗口）；
+  - **关闭窗口即缩到右下角系统托盘**，服务继续后台运行，托盘右键菜单可一键打开控制台、同步更新、查看日志与退出；
+  - 托盘应用**内嵌托管服务**，无需独立的隐藏守护进程；重复启动自动复用已运行实例（单实例保证）。
+- 📦 **单文件 exe 与快捷方式**：
+  - 提供 `tools/build_exe.py` 一键打包内嵌图标的 `dist/SkillBox.exe`（无黑窗、免装 Python）；
+  - `skillbox shortcut` 生成的桌面快捷方式优先指向打包好的 exe，双击即启动。
 - 🛠️ **统一 CLI 命令行中枢与双击一体化**：
-  - 根目录提供统一命令 **`skillbox.bat`**，双击默认直接后台启动，命令行传参可一键启停、重启、查状态、开机自启、全量更新与查日志。
+  - 根目录提供统一命令 **`skillbox.bat`**，双击默认直接拉起桌面托盘应用，命令行传参可一键启停、重启、查状态、开机自启、全量更新与查日志。
 - 🏷️ **智能直接父目录名 Tag**：
   - 严格按技能所属的直接父目录名提取 Tag（如 `A/B/C/skill` 对应 `Tag = C`）；
   - 顶部配备 Tag 下拉筛选与快捷 Tag 胶囊栏（Tag Pills），点击卡片标签联动过滤。
@@ -66,38 +73,49 @@
 
 ---
 
-## 🚀 快速上手与统一 CLI
+## ⬇️ 下载与安装
 
-**首次使用一键完成**（命令注册 + 桌面图标 + 开机自启 + 启动服务）：
+前往 [Releases](https://github.com/SenZh/SkillBox/releases) 下载最新成果物：
+
+| 成果物 | 适用场景 | 说明 |
+| :--- | :--- | :--- |
+| **`SkillBox-Setup-<version>.exe`** | 推荐，常规安装 | Windows 安装包：双击安装，自动创建开始菜单/桌面快捷方式，可一键卸载 |
+| **`SkillBox-<version>-win64.zip`** | 绿色免安装 | 解压即用，双击 `SkillBox.exe` 启动，配置与缓存保存在解压目录内 |
+
+> Windows 安装包/绿色版均**内置 Python 运行时与全部依赖**，无需另装 Python。
+> Agent CLI（`skillbox search/commit`）面向开发机，请在源码仓库中运行（需本机 Python）。
+
+---
+
+## 🚀 快速上手
+
+**安装版 / 绿色版**：双击 `SkillBox.exe` 即可启动，界面顶部「💾 保存并生效挂载」一键应用挂载；
+开机自启在 **「⚙️ 仓库与配置」** 页面一键开关。
+
+**源码运行**：
 
 ```bash
-skillbox install init
+pip install -r requirements.txt   # 桌面应用依赖
+python desktop_app.py             # 启动桌面托盘应用
 ```
 
-之后**双击桌面 SkillBox 图标**即可启动服务，并以独立应用窗口（无地址栏，接近原生客户端）打开控制台。
+---
 
-SkillBox 将所有运维操作统一收拢在 **`skillbox`** 命令中（Windows 为 `skillbox.bat`）：
+## ⌨️ Agent CLI
 
-| 操作指令 | 效果说明 |
+SkillBox 为 **AI Agent** 提供了一个极简命令行工具，仅三条命令，
+聚焦「检索技能」与「提交技能」两件事（Windows 入口为 `skillbox.bat`，类 Unix 为 `skillbox`）：
+
+| 命令 | 效果说明 |
 | :--- | :--- |
-| **`skillbox install [init]`** | 一键安装：注册命令到 PATH + 创建桌面图标 + 开机自启（加 `init` 同时启动服务） |
-| **`skillbox shortcut`** | 仅创建桌面快捷方式（双击即启动并打开应用窗口） |
-| **`skillbox gui`** | 启动服务并以独立应用窗口打开（桌面图标调用入口） |
-| **`skillbox start`** (或 `up`) | 后台静默启动服务（自动探活自愈，不重复拉起） |
-| **`skillbox stop`** (或 `down`) | 安全停止后台服务并释放端口占用 |
-| **`skillbox restart`** | 一键重启服务 |
-| **`skillbox status`** | 查看当前运行状态、后台 PID、服务端口与开机自启情况 |
-| **`skillbox open`** | 以应用窗口打开控制台（`http://127.0.0.1:7860`） |
-| **`skillbox update`** | 触发所有 Git 仓库源增量拉取最新提交 |
-| **`skillbox resolve <name>`** | 定位技能源真身路径及 Git 目录（未被 Git 管理会明确提示） |
-| **`skillbox commit <name> -m s`** | 白名单提交并推送该技能改动（仅提交该技能目录） |
-| **`skillbox log [N]`** | 查看后台最近运行审计日志（默认 50 行） |
-| **`skillbox autostart on / off`** | 一键开启 / 关闭开机静默自启（无需管理员提权，跨平台） |
-| **`skillbox run`** | 前台直接运行服务（用于排错调试查看实时日志） |
-| **`skillbox test`** | 一键运行全量自动化单元测试套件 |
-| **`skillbox uninstall`** | 移除命令注册与桌面快捷方式 |
+| **`skillbox search <关键词>`** | 按关键词搜索技能（匹配名称/描述/目录），输出**名称 + 真身路径 + 描述** |
+| **`skillbox commit <名称> [-m "说明"]`** | 白名单提交并推送**该技能目录**（提交前自动先拉取该技能所在仓库） |
+| **`skillbox help`** | 显示帮助 |
 
-> **跨平台**：Windows / macOS / Linux 三平台均支持。打开控制台优先使用 Chrome/Edge 应用模式（无地址栏独立窗口），找不到时自动回退系统默认浏览器。
+> 服务的启停、安装、开机自启、桌面图标等运维能力**已全部迁移到桌面应用与 WebUI**，
+> CLI 不再承担这些职责，保持 Agent 使用场景的极简与稳定。
+>
+> `commit` 支持 `--no-push`（仅本地提交不推送）。
 
 ---
 
@@ -122,15 +140,20 @@ SkillBox 将所有运维操作统一收拢在 **`skillbox`** 命令中（Windows
 skillbox/
 ├── skillbox.bat             # Windows 统一 CLI 命令与启动入口
 ├── skillbox                 # macOS / Linux 统一 CLI 启动入口
-├── start.bat                # 兼容启动快捷方式（调用 skillbox start）
-├── cli.py                   # CLI 命令行逻辑引擎（启停、安装、图标、更新、resolve/commit）
+├── start.bat                # 兼容启动入口（拉起桌面托盘应用）
+├── cli.py                   # Agent CLI（search / commit / help）
 ├── app.py                   # SkillBox 服务端核心（多仓库引擎 + 递归扫描 + 前端 SPA）
-├── platform_utils.py        # 跨平台工具（应用模式浏览器、桌面图标、启动器）
+├── desktop_app.py           # 桌面托盘应用（原生 WebView 窗口 + 系统托盘 + 内嵌服务）
+├── platform_utils.py        # 跨平台工具库（快捷方式/应用模式/启动器，供扩展调用）
+├── requirements.txt         # 桌面托盘应用运行依赖（pywebview / pystray / Pillow）
 ├── builtin_skills/          # 工具自带技能（随版本分发，默认自动挂载）
 │   └── skillbox/            # skillbox 命令使用说明技能
 ├── assets/                  # 图标资源（icon.ico / icon.png，多尺寸）
 ├── tools/
-│   └── gen_icon.py          # 图标生成脚本（Pillow 绘制，可复现）
+│   ├── gen_icon.py          # 图标生成脚本（Pillow 绘制，可复现）
+│   ├── build_exe.py         # 单文件 exe 打包脚本（PyInstaller）
+│   ├── build_release.py     # Release 成果物打包（zip 绿色包 + Inno Setup 安装包）
+│   └── installer.iss        # Inno Setup 安装包脚本
 ├── run_tests.py             # 自动化单元测试运行器
 ├── tests/                   # 自动化测试套件
 │   ├── test_config.py       # 配置管理与持久化测试
@@ -140,8 +163,11 @@ skillbox/
 │   ├── test_autostart.py    # 开机自启注册测试
 │   └── test_api.py          # HTTP REST API 全链路测试
 ├── docs/
-│   ├── architecture.md      # 系统架构设计文档
-│   └── changelog.md         # 变更日志 (Keep a Changelog)
+│   └── architecture.md      # 系统架构设计文档
+├── .github/workflows/       # CI：单元测试 + 打标签自动发布
+├── CHANGELOG.md             # 变更日志 (Keep a Changelog)
+├── CONTRIBUTING.md          # 贡献指南
+├── LICENSE                  # MIT 许可协议
 ├── ROADMAP.md               # 产品演进路线图
 ├── .gitattributes           # 跨平台行尾规范化
 ├── .gitignore               # Git 忽略配置
@@ -167,6 +193,8 @@ python run_tests.py
 ## 📚 更多参考
 
 * 详细系统架构与数据流图：请参阅 [架构设计文档 (docs/architecture.md)](docs/architecture.md)
-* 迭代历史与版本记录：请参阅 [变更日志 (docs/changelog.md)](docs/changelog.md)
+* 迭代历史与版本记录：请参阅 [变更日志 (CHANGELOG.md)](CHANGELOG.md)
+* 参与贡献与打包说明：请参阅 [贡献指南 (CONTRIBUTING.md)](CONTRIBUTING.md)
 * 未来规划与生态演进：请参阅 [产品路线图 (ROADMAP.md)](ROADMAP.md)
+* 开源许可协议：请参阅 [MIT License (LICENSE)](LICENSE)
 * 项目仓库地址：[https://github.com/SenZh/SkillBox](https://github.com/SenZh/SkillBox)
