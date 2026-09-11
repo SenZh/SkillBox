@@ -32,7 +32,7 @@ jobs:
         run: |
           python --version
           python -m PyInstaller --version
-          python -c "import webview, pystray, PIL; print('deps ok')"
+          python -c "import webview, pystray, PIL, clr; print('deps ok')"
 
       - name: Build single-file exe
         run: python tools/build_exe.py
