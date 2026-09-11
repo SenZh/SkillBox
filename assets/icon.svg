@@ -1,0 +1,54 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366F1"/>
+      <stop offset="0.5" stop-color="#7C5CFC"/>
+      <stop offset="1" stop-color="#A78BFA"/>
+    </linearGradient>
+    <linearGradient id="topFace" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E9E7FF"/>
+    </linearGradient>
+    <linearGradient id="leftFace" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C7CEFC"/>
+      <stop offset="1" stop-color="#9DA8F5"/>
+    </linearGradient>
+    <linearGradient id="rightFace" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#DFE3FE"/>
+      <stop offset="1" stop-color="#BAC3FB"/>
+    </linearGradient>
+    <filter id="sh" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#2A1E7A" flood-opacity="0.38"/>
+    </filter>
+    <filter id="nodeGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="3" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- 背景 -->
+  <rect x="16" y="16" width="480" height="480" rx="116" fill="url(#bg)"/>
+  <path d="M16 132 C16 68 68 16 132 16 H380 C444 16 496 68 496 132 V198 C330 142 182 142 16 198 Z"
+        fill="#FFFFFF" opacity="0.10"/>
+
+  <!-- 等距立方体（居中偏上） -->
+  <g filter="url(#sh)">
+    <!-- 顶面 -->
+    <polygon points="256,104 352,160 256,216 160,160" fill="url(#topFace)"/>
+    <!-- 左面 -->
+    <polygon points="160,160 256,216 256,332 160,276" fill="url(#leftFace)"/>
+    <!-- 右面 -->
+    <polygon points="352,160 256,216 256,332 352,276" fill="url(#rightFace)"/>
+    <!-- 棱边高光 -->
+    <polyline points="160,160 256,104 352,160" fill="none" stroke="#FFFFFF" stroke-width="3" opacity="0.9"/>
+    <line x1="256" y1="104" x2="256" y2="216" stroke="#FFFFFF" stroke-width="2.2" opacity="0.55"/>
+    <!-- 左面知识节点（Skill 象征，简洁三点） -->
+    <g filter="url(#nodeGlow)">
+      <line x1="192" y1="214" x2="218" y2="246" stroke="#4F46E5" stroke-width="4" stroke-linecap="round" opacity="0.9"/>
+      <line x1="218" y1="246" x2="192" y2="278" stroke="#4F46E5" stroke-width="4" stroke-linecap="round" opacity="0.9"/>
+      <circle cx="192" cy="214" r="10" fill="#4F46E5"/>
+      <circle cx="192" cy="278" r="10" fill="#4F46E5"/>
+      <circle cx="218" cy="246" r="12" fill="#312E81"/>
+    </g>
+  </g>
+</svg>
