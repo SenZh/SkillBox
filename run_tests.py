@@ -2,6 +2,14 @@ import unittest
 import sys
 from pathlib import Path
 
+# CI 的 Windows runner 默认 stdout 编码为 cp1252，打印中文测试标题会抛
+# UnicodeEncodeError 导致测试在收集阶段就崩溃。这里强制切到 UTF-8。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 def run_all_tests():
     print("=" * 60)
     print("       SkillBox v0.1 - 自动化单元测试套件")

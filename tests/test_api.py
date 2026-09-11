@@ -30,7 +30,20 @@ class TestAPI(unittest.TestCase):
             except Exception:
                 time.sleep(0.3)
         if not ready:
-            raise RuntimeError("SkillBox 测试服务未能在 20 秒内就绪")
+            # 探活失败：收集子进程状态与输出，便于定位“服务为何没起来”
+            diag = [f"SkillBox 测试服务未能在 20 秒内就绪 (base_url={cls.base_url})"]
+            diag.append(f"子进程 returncode={cls.proc.poll()}")
+            try:
+                out, err = cls.proc.communicate(timeout=3)
+                diag.append(f"--- app.py stdout ---\n{(out or '').strip()}")
+                diag.append(f"--- app.py stderr ---\n{(err or '').strip()}")
+            except subprocess.TimeoutExpired:
+                cls.proc.kill()
+                out, err = cls.proc.communicate()
+                diag.append("[子进程仍在运行，已被 kill]")
+                diag.append(f"--- app.py stdout ---\n{(out or '').strip()}")
+                diag.append(f"--- app.py stderr ---\n{(err or '').strip()}")
+            raise RuntimeError("\n".join(diag))
 
     @classmethod
     def tearDownClass(cls):
