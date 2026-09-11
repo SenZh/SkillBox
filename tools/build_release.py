@@ -19,6 +19,12 @@ import zipfile
 import subprocess
 from pathlib import Path
 
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DIST_EXE = BASE_DIR / "dist" / "SkillBox.exe"
 RELEASE_DIR = BASE_DIR / "release"
