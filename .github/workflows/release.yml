@@ -41,16 +41,7 @@ jobs:
           python tools/build_exe.py 2>&1 | tee build-exe.log
           rc=${PIPESTATUS[0]}
           if [ $rc -ne 0 ]; then
-            python -c '
-import sys
-for s in (sys.stdout, sys.stderr):
-    try: s.reconfigure(encoding="utf-8", errors="replace")
-    except: pass
-with open("build-exe.log", "r", encoding="utf-8", errors="replace") as f:
-    lines = f.readlines()[-80:]
-escaped = "".join(lines).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-print(f"::error title=Build Exe Failure Traceback::{escaped}")
-'
+            python tools/report_failure.py build-exe.log "Build Exe Failure Traceback" || true
           fi
           exit $rc
 
