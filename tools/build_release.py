@@ -74,7 +74,7 @@ def stage_portable_dir(version):
         "2. 关闭窗口会缩到右下角系统托盘，右键托盘图标可退出；\n"
         "3. 首次启动会自动把 skillbox 命令注册到用户 PATH；\n"
         "4. 配置与技能缓存保存在本目录（config.json / .skillbox_cache）。\n\n"
-        "命令行：新开终端执行 skillbox status / skillbox help\n",
+        "命令行：新开终端执行 skillbox search / skillbox commit / skillbox help\n",
         encoding="utf-8",
     )
     return stage

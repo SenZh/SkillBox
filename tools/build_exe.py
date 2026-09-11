@@ -44,8 +44,8 @@ def main():
         "--collect-all", "pystray",
         "--collect-all", "PIL",
         # 资源目录：图标、内置技能
-        "--add-data", f"{BASE_DIR / 'assets'}{os.pathsep}assets",
-        "--add-data", f"{BASE_DIR / 'builtin_skills'}{os.pathsep}builtin_skills",
+        "--add-data", f"assets{os.pathsep}assets",
+        "--add-data", f"builtin_skills{os.pathsep}builtin_skills",
     ]
     if ICON.exists():
         cmd += ["--icon", str(ICON)]
