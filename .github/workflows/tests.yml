@@ -20,4 +20,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Run unit tests
-        run: python run_tests.py
+        shell: bash
+        run: |
+          set +e
+          python run_tests.py 2>&1 | tee test-output.log
+          rc=${PIPESTATUS[0]}
+          if [ $rc -ne 0 ]; then
+            {
+              echo "## Test failure on ${{ matrix.os }} / Python ${{ matrix.python-version }}"
+              echo '```'
+              tail -n 120 test-output.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit $rc
