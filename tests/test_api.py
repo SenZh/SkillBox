@@ -1,5 +1,6 @@
 import unittest
 import json
+import sys
 import time
 import subprocess
 import urllib.request
@@ -8,10 +9,10 @@ from pathlib import Path
 class TestAPI(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # 后台启动测试实例
+        # 后台启动测试实例（使用当前解释器，保证跨平台可用）
         cls.base_url = "http://127.0.0.1:7860"
         cls.proc = subprocess.Popen(
-            ["python", "-u", "app.py"],
+            [sys.executable, "-u", "app.py"],
             cwd=str(Path(__file__).resolve().parent.parent),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
