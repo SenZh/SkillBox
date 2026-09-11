@@ -14,6 +14,7 @@ __version__ = "0.1.0"
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "config.json"
 CACHE_BASE_DIR = BASE_DIR / ".skillbox_cache"
+BUILTIN_SKILLS_DIR = BASE_DIR / "builtin_skills"
 LOG_FILE = BASE_DIR / "skillbox.log"
 
 def log(msg, level="INFO"):
@@ -312,6 +313,178 @@ def resolve_skill_install_dir(skill_name, folder_path, cfg):
 
     # 3. 全局默认路径
     return (default_install_to, "default", str(default_install_to), "")
+
+def is_git_managed(path: Path):
+    """
+    判断给定路径是否处于 Git 版本管理之下（向上逐级查找 .git 目录/文件）。
+    返回: (True, git_root) 或 (False, None)
+    """
+    try:
+        p = Path(path).resolve()
+    except Exception:
+        p = Path(path)
+    cur = p if p.is_dir() else p.parent
+    for ancestor in [cur] + list(cur.parents):
+        if (ancestor / ".git").exists():
+            return True, ancestor
+    return False, None
+
+def resolve_skill(skill_name, cfg=None):
+    """
+    解析单个技能，返回其源真身路径、所在 Git 仓库、分支等确定性信息。
+    命中多个同名技能时，优先返回已挂载的那个，其次返回第一个。
+    """
+    if cfg is None:
+        cfg = load_config()
+
+    # 内置技能优先：跟随 SkillBox 工具分发，不依赖用户 Git 仓库
+    builtin_dir = BUILTIN_SKILLS_DIR / skill_name
+    if builtin_dir.is_dir() and ((builtin_dir / "SKILL.md").exists() or (builtin_dir / "skill.md").exists()):
+        true_path = builtin_dir
+        managed, git_root = is_git_managed(true_path)
+        sub_dir = ""
+        if managed and git_root is not None:
+            try:
+                sub_dir = str(true_path.resolve().relative_to(Path(git_root).resolve())).replace("\\", "/")
+            except Exception:
+                sub_dir = ""
+        default_dir = Path(cfg.get("default_install_to", "")).expanduser()
+        mount_paths = []
+        mp = default_dir / skill_name
+        if mp.exists() or mp.is_symlink():
+            mount_paths.append(str(mp))
+        return {
+            "name": skill_name,
+            "true_path": str(true_path),
+            "git_managed": managed,
+            "git_dir": str(git_root) if (managed and git_root) else "",
+            "git_branch": "",
+            "sub_dir": sub_dir,
+            "source_id": "builtin",
+            "source_name": "SkillBox 内置技能",
+            "is_builtin": True,
+            "mount_paths": mount_paths,
+        }
+
+    skills = [s for s in scan_all_skills(cfg) if s["name"] == skill_name]
+    if not skills:
+        raise ValueError(f"未找到名为 [{skill_name}] 的技能，请检查名称或先拉取仓库源")
+
+    skill = next((s for s in skills if s.get("installed")), skills[0])
+    true_path = Path(skill["source_path"])
+    managed, git_root = is_git_managed(true_path)
+    sub_dir = ""
+
+    src = next((x for x in cfg.get("sources", []) if x.get("id") == skill["source_id"]), None)
+    source_branch = (src or {}).get("branch", skill.get("source_branch", "main"))
+
+    if managed and git_root is not None:
+        # 计算 git 仓库根与当前技能目录的相对路径（用于白名单提交）
+        try:
+            sub_dir = str(true_path.resolve().relative_to(Path(git_root).resolve())).replace("\\", "/")
+        except Exception:
+            sub_dir = ""
+        repo_dir = str(git_root)
+    else:
+        repo_dir = ""
+
+    mount_paths = []
+    default_dir = Path(cfg.get("default_install_to", "")).expanduser()
+    candidates = {Path(skill["effective_install_to"]).expanduser() / skill_name}
+    candidates.add(default_dir / skill_name)
+    for d in (candidates | {Path(p).expanduser() / skill_name for p in cfg.get("skill_overrides", {}).values() if p.strip()}):
+        try:
+            if d.exists() or d.is_symlink():
+                mount_paths.append(str(d))
+        except Exception:
+            pass
+
+    return {
+        "name": skill_name,
+        "true_path": str(true_path),
+        "git_managed": managed,
+        "git_dir": repo_dir,
+        "git_branch": source_branch,
+        "sub_dir": sub_dir,
+        "source_id": skill["source_id"],
+        "source_name": skill["source_name"],
+        "mount_paths": mount_paths,
+    }
+
+def scan_builtin_skills():
+    """
+    扫描 SkillBox 自带的内置技能目录 (builtin_skills/)。
+    内置技能跟随工具版本分发，不依赖任何用户 Git 仓库，用于承载工具自身的说明书类 Skill。
+    返回: [{name, source_path}, ...]
+    """
+    result = []
+    if not BUILTIN_SKILLS_DIR.exists():
+        return result
+    for child in sorted(BUILTIN_SKILLS_DIR.iterdir()):
+        if child.is_dir() and ((child / "SKILL.md").exists() or (child / "skill.md").exists()):
+            result.append({"name": child.name, "source_path": str(child)})
+    return result
+
+def install_builtin_skills(cfg=None):
+    """
+    将内置技能默认挂载到全局默认安装目录根部 (default_install_to/<name>)。
+    该操作幂等，每次服务启动时执行，确保内置技能始终可用且不依赖用户勾选。
+    """
+    if cfg is None:
+        cfg = load_config()
+    default_dir = Path(cfg.get("default_install_to", "")).expanduser()
+    if not str(default_dir):
+        return 0
+    count = 0
+    for skill in scan_builtin_skills():
+        try:
+            default_dir.mkdir(parents=True, exist_ok=True)
+            target_link = default_dir / skill["name"]
+            if not target_link.exists():
+                safe_create_link(Path(skill["source_path"]), target_link)
+                log(f"[Builtin] 已默认挂载内置技能: {skill['name']} -> {target_link}")
+                count += 1
+        except Exception as e:
+            log(f"[Builtin] 内置技能 [{skill['name']}] 挂载失败: {e}", level="ERROR")
+    return count
+
+def ensure_cli_installed():
+    """
+    确保 skillbox 命令已注册到当前用户 PATH（HKCU\\Environment），无需管理员权限。
+    服务启动时自动调用：未安装则自动安装，已安装则跳过。幂等且失败不阻断服务启动。
+    """
+    if sys.platform != "win32":
+        return False
+    launcher = BASE_DIR / "skillbox.bat"
+    if not launcher.exists():
+        return False
+    bin_dir = str(BASE_DIR)
+    try:
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment", 0, winreg.KEY_READ) as key:
+                cur, _ = winreg.QueryValueEx(key, "Path")
+                cur = cur or ""
+        except FileNotFoundError:
+            cur = ""
+        parts = [p for p in cur.split(";") if p.strip()]
+        if any(p.rstrip("\\").lower() == bin_dir.rstrip("\\").lower() for p in parts):
+            return False  # 已安装
+
+        parts.append(bin_dir)
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Environment", 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, ";".join(parts))
+        # 广播环境变量变更，让新开终端尽快感知
+        try:
+            import ctypes
+            ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, None)
+        except Exception:
+            pass
+        log(f"[CLI] 已自动将 skillbox 命令注册到用户 PATH: {bin_dir}")
+        return True
+    except Exception as e:
+        log(f"[CLI] 自动安装 skillbox 命令失败: {e}", level="ERROR")
+        return False
 
 def scan_all_skills(cfg):
     sources = cfg.get("sources", [])
@@ -1744,6 +1917,18 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"enabled": status, "platform": sys.platform}).encode("utf-8"))
+        elif url.path == "/api/resolve":
+            from urllib.parse import parse_qs
+            params = parse_qs(url.query)
+            name = params.get("name", [""])[0].strip()
+            try:
+                data_resp = {"ok": True, "result": resolve_skill(name)}
+            except Exception as e:
+                data_resp = {"ok": False, "error": str(e)}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(data_resp, ensure_ascii=False).encode("utf-8"))
         elif url.path == "/api/logs":
             lines = []
             if LOG_FILE.exists():
@@ -1991,6 +2176,42 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"ok": True, "migrated": migrated_count}).encode("utf-8"))
 
+        elif url.path == "/api/commit":
+            name = (data.get("name") or "").strip()
+            message = (data.get("message") or "").strip()
+            push = bool(data.get("push", True))
+            try:
+                if not name:
+                    raise ValueError("缺少技能名称参数 name")
+                info = resolve_skill(name)
+                if not info["git_managed"]:
+                    raise ValueError(f"技能 [{name}] 未被 Git 管理，无法提交")
+                if not info["sub_dir"]:
+                    raise ValueError(f"技能 [{name}] 的相对路径解析失败，拒绝提交以防误伤其他文件")
+
+                repo_dir = info["git_dir"]
+                branch = info["git_branch"]
+                pathspec = info["sub_dir"]
+                # 白名单提交：仅 add 该技能目录，绝不 git add -A
+                git_cmd(["add", "--", pathspec], cwd=repo_dir)
+                status = git_cmd(["status", "--porcelain", "--", pathspec], cwd=repo_dir)
+                if not status.strip():
+                    payload = {"ok": True, "committed": False, "reason": "该技能目录没有变更，已跳过提交"}
+                else:
+                    git_cmd(["commit", "-m", message or f"chore(skill): update {name}"], cwd=repo_dir)
+                    committed_hash = git_cmd(["rev-parse", "--short", "HEAD"], cwd=repo_dir)
+                    payload = {"ok": True, "committed": True, "hash": committed_hash, "branch": branch}
+                    if push:
+                        git_cmd(["push", "origin", branch], cwd=repo_dir)
+                        payload["pushed"] = True
+                    log(f"[Commit] 技能 [{name}] 已提交 {committed_hash} 到 {branch}")
+            except Exception as e:
+                payload = {"ok": False, "error": str(e)}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
         elif url.path == "/api/autostart":
             enable = bool(data.get("enabled", False))
             try:
@@ -2013,6 +2234,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             all_skills = scan_all_skills(cfg)
             default_dir = Path(cfg.get("default_install_to", "")).expanduser()
 
+            # 内置技能不属于任何用户仓库，不受勾选集合影响，挂载前先确保其存在
+            try:
+                install_builtin_skills(cfg)
+            except Exception as e:
+                log(f"内置技能挂载异常: {e}", level="ERROR")
+
             # 汇总该项目涉及的所有潜在安装目录，以便在路径变更或取消挂载时彻底安全解绑
             all_possible_target_dirs = {default_dir}
             for fo_val in cfg.get("folder_overrides", {}).values():
@@ -2021,6 +2248,34 @@ class RequestHandler(BaseHTTPRequestHandler):
             for so_val in cfg.get("skill_overrides", {}).values():
                 if so_val.strip():
                     all_possible_target_dirs.add(Path(so_val.strip()).expanduser())
+
+            # ===== 安全阀：防止误传精简勾选集合导致批量解绑 =====
+            # 统计当前实际已挂载的技能数（排除内置技能）
+            builtin_names = {b["name"] for b in scan_builtin_skills()}
+            currently_mounted = 0
+            for s in all_skills:
+                name = s["name"]
+                if name in builtin_names:
+                    continue
+                eff = Path(s["effective_install_to"]).expanduser() / name
+                if eff.exists():
+                    currently_mounted += 1
+            allow_shrink = bool(data.get("allow_shrink", False))
+            # 当现有挂载 >= 5 且本次勾选会导致挂载数缩减过半时，拒绝执行（除非显式 allow_shrink）
+            if (not allow_shrink and currently_mounted >= 5
+                    and len(selected & {s["name"] for s in all_skills}) < currently_mounted / 2):
+                payload = {
+                    "ok": False,
+                    "error": (f"安全阀拦截：当前已挂载 {currently_mounted} 个技能，"
+                              f"本次仅勾选 {len(selected)} 个，将导致大批量解绑。"
+                              f"如确需如此，请传 allow_shrink=true。")
+                }
+                log(f"[Safety] 已拦截疑似误操作的批量解绑：已挂载 {currently_mounted}，勾选 {len(selected)}", level="ERROR")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                return
 
             try:
                 installed_count = 0
@@ -2053,6 +2308,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                             if al.exists():
                                 safe_remove_link(al)
                                 log(f"[Unmount] 解除挂载技能: {name} 从 {al}")
+
+                # 内置技能永不受勾选集合影响，卸载循环结束后兜底补挂
+                install_builtin_skills(cfg)
 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -2097,6 +2355,18 @@ def main():
 
     # 启动定时自动更新后台守护线程
     threading.Thread(target=auto_update_scheduler, daemon=True).start()
+
+    # 内置技能默认挂载（跟随工具版本，不依赖用户勾选与 Git 仓库）
+    try:
+        install_builtin_skills()
+    except Exception as e:
+        print(f"[!] 内置技能挂载异常: {e}", flush=True)
+
+    # 确保 skillbox 命令已注册到用户 PATH（未安装则自动安装）
+    try:
+        ensure_cli_installed()
+    except Exception as e:
+        print(f"[!] 命令注册异常: {e}", flush=True)
 
     is_silent = "--silent" in sys.argv or "--no-browser" in sys.argv
     if not is_silent:
