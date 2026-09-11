@@ -18,7 +18,19 @@ class TestAPI(unittest.TestCase):
             stderr=subprocess.PIPE,
             text=True
         )
-        time.sleep(1.5)
+        # 轮询探活：干净环境首次启动较慢，固定 sleep 会在慢机器/CI 上导致竞态失败
+        deadline = time.time() + 20
+        ready = False
+        while time.time() < deadline:
+            try:
+                resp = urllib.request.urlopen(f"{cls.base_url}/", timeout=1)
+                if resp.status == 200:
+                    ready = True
+                    break
+            except Exception:
+                time.sleep(0.3)
+        if not ready:
+            raise RuntimeError("SkillBox 测试服务未能在 20 秒内就绪")
 
     @classmethod
     def tearDownClass(cls):
