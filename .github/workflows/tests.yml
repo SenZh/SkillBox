@@ -33,11 +33,14 @@ jobs:
               tail -n 120 test-output.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            # 同时把日志尾部逐行作为 ::error:: annotation 输出，
-            # 便于通过匿名 check-runs annotations API 读取真实报错（无需登录 GitHub）
-            echo "::error::===== tail of test-output.log (last 40 lines) ====="
-            tail -n 40 test-output.log | while IFS= read -r line; do
-              echo "::error::$line"
-            done
+            # 将日志尾部打包为单条支持换行 (%0A) 的 ::error:: annotation，
+            # 彻底突破 GitHub 单 step 最多 10 条 annotation 的限制，完整透传报错与子进程输出
+            python -c '
+with open("test-output.log", "r", encoding="utf-8", errors="replace") as f:
+    lines = f.readlines()[-80:]
+content = "".join(lines)
+escaped = content.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+print(f"::error title=Test Failure Traceback::{escaped}")
+'
           fi
           exit $rc

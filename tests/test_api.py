@@ -9,19 +9,28 @@ from pathlib import Path
 class TestAPI(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # 后台启动测试实例（使用当前解释器，保证跨平台可用）
+        # 后台启动测试实例（使用当前解释器，保证跨平台可用；--silent 避免无头环境弹出浏览器）
+        repo_root = Path(__file__).resolve().parent.parent
+        cls.pid_file = repo_root / ".skillbox.pid"
         cls.base_url = "http://127.0.0.1:7860"
         cls.proc = subprocess.Popen(
-            [sys.executable, "-u", "app.py"],
-            cwd=str(Path(__file__).resolve().parent.parent),
+            [sys.executable, "-u", "app.py", "--silent"],
+            cwd=str(repo_root),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
         )
-        # 轮询探活：干净环境首次启动较慢，固定 sleep 会在慢机器/CI 上导致竞态失败
+        # 轮询探活：自适应解析实际绑定端口（若 7860 冲突则自动跟随降级端口）
         deadline = time.time() + 20
         ready = False
         while time.time() < deadline:
+            if cls.pid_file.exists():
+                try:
+                    parts = cls.pid_file.read_text(encoding="utf-8").strip().split(":")
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        cls.base_url = f"http://127.0.0.1:{parts[1]}"
+                except Exception:
+                    pass
             try:
                 resp = urllib.request.urlopen(f"{cls.base_url}/", timeout=1)
                 if resp.status == 200:
