@@ -657,7 +657,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <!-- Logo & Primary Tabs -->
       <div class="flex items-center gap-8 min-w-0">
         <div class="flex items-center gap-2.5 shrink-0 cursor-pointer" onclick="switchPage('skills')">
-          <span class="text-2xl">📦</span>
+          <img src="/assets/icon-simple.svg" alt="SkillBox" class="w-8 h-8 rounded-lg shadow-xs">
           <span class="font-bold text-lg text-slate-900 tracking-tight">SkillBox</span>
           <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100 font-mono font-medium">v0.1</span>
         </div>
