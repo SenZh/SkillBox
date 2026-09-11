@@ -55,6 +55,12 @@ def load_config():
             pass
     if "sources" not in cfg or not isinstance(cfg["sources"], list):
         cfg["sources"] = []
+    # 兼容历史数据：早期创建的仓库源可能缺失 auto_update_interval 字段，
+    # 调度器缺省按 0（仅手动）处理，而前端展示缺省按 60 兜底，导致"界面显示已定时但实际不触发"。
+    # 此处统一补默认值 60 分钟，保证前后端一致。
+    for s in cfg["sources"]:
+        if isinstance(s, dict) and "auto_update_interval" not in s:
+            s["auto_update_interval"] = 60
     if "folder_overrides" not in cfg or not isinstance(cfg["folder_overrides"], dict):
         cfg["folder_overrides"] = {}
     if "skill_overrides" not in cfg or not isinstance(cfg["skill_overrides"], dict):
@@ -81,24 +87,34 @@ def get_autostart_status():
         return False
 
 def set_autostart(enable: bool):
-    """注册或注销 Windows 开机静默自启动 (无需管理员权限)"""
+    """注册或注销 Windows 开机静默自启动 (无需管理员权限)
+
+    成功返回 True；失败抛出 RuntimeError（由调用方负责向用户回传真实原因）。
+    """
     if sys.platform != "win32":
-        return False
+        raise RuntimeError("当前系统非 Windows，不支持开机自启动")
     import winreg
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_SET_VALUE) as key:
-        if enable:
-            python_exe = sys.executable
-            pythonw_exe = python_exe.lower().replace("python.exe", "pythonw.exe")
-            if not os.path.exists(pythonw_exe):
-                pythonw_exe = python_exe
-            app_script = str((BASE_DIR / "app.py").resolve())
-            cmd_str = f'"{pythonw_exe}" "{app_script}" --silent'
-            winreg.SetValueEx(key, AUTOSTART_APP_NAME, 0, winreg.REG_SZ, cmd_str)
-        else:
-            try:
-                winreg.DeleteValue(key, AUTOSTART_APP_NAME)
-            except WindowsError:
-                pass
+    # 仅替换文件名部分，保留路径原始大小写（避免整条路径被 lower() 破坏）
+    python_exe = sys.executable
+    if python_exe.lower().endswith("python.exe"):
+        pythonw_exe = python_exe[:-len("python.exe")] + "pythonw.exe"
+    else:
+        pythonw_exe = python_exe
+    if not os.path.exists(pythonw_exe):
+        pythonw_exe = python_exe
+    app_script = str((BASE_DIR / "app.py").resolve())
+    cmd_str = f'"{pythonw_exe}" "{app_script}" --silent'
+    try:
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            if enable:
+                winreg.SetValueEx(key, AUTOSTART_APP_NAME, 0, winreg.REG_SZ, cmd_str)
+            else:
+                try:
+                    winreg.DeleteValue(key, AUTOSTART_APP_NAME)
+                except FileNotFoundError:
+                    pass
+    except OSError as e:
+        raise RuntimeError(f"写入注册表失败: {e}")
     return enable
 
 def git_cmd(args, cwd=None):
@@ -353,6 +369,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SkillBox - AI 技能管理器</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
   <style>
     .modal-backdrop { background: rgba(15, 23, 42, 0.45); backdrop-filter: blur(4px); }
     /* 自定义滚动条 */
@@ -360,6 +378,32 @@ HTML_PAGE = r"""<!DOCTYPE html>
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    /* Markdown 预览排版 */
+    .prose-preview { font-size: 0.875rem; line-height: 1.7; color: #334155; }
+    .prose-preview h1, .prose-preview h2, .prose-preview h3, .prose-preview h4 { font-weight: 700; color: #0f172a; margin: 1.25em 0 0.6em; line-height: 1.3; }
+    .prose-preview h1 { font-size: 1.5rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.3em; }
+    .prose-preview h2 { font-size: 1.25rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.25em; }
+    .prose-preview h3 { font-size: 1.1rem; }
+    .prose-preview h4 { font-size: 1rem; }
+    .prose-preview p { margin: 0.75em 0; }
+    .prose-preview ul, .prose-preview ol { margin: 0.75em 0; padding-left: 1.6em; }
+    .prose-preview ul { list-style: disc; }
+    .prose-preview ol { list-style: decimal; }
+    .prose-preview li { margin: 0.35em 0; }
+    .prose-preview li > ul, .prose-preview li > ol { margin: 0.25em 0; }
+    .prose-preview a { color: #4f46e5; text-decoration: underline; }
+    .prose-preview code { background: #f1f5f9; color: #be185d; padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.85em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .prose-preview pre { background: #0f172a; color: #e2e8f0; padding: 1em; border-radius: 10px; overflow-x: auto; margin: 0.85em 0; }
+    .prose-preview pre code { background: transparent; color: inherit; padding: 0; font-size: 0.85em; }
+    .prose-preview blockquote { border-left: 3px solid #a5b4fc; background: #f8fafc; padding: 0.5em 1em; margin: 0.85em 0; color: #475569; }
+    .prose-preview table { border-collapse: collapse; width: 100%; margin: 0.85em 0; font-size: 0.85em; display: block; overflow-x: auto; }
+    .prose-preview th, .prose-preview td { border: 1px solid #e2e8f0; padding: 0.5em 0.75em; text-align: left; }
+    .prose-preview th { background: #f8fafc; font-weight: 600; color: #0f172a; }
+    .prose-preview tr:nth-child(even) td { background: #fcfcfd; }
+    .prose-preview hr { border: none; border-top: 1px solid #e2e8f0; margin: 1.5em 0; }
+    .prose-preview img { max-width: 100%; border-radius: 8px; }
+    .prose-preview > *:first-child { margin-top: 0; }
+    .prose-preview > *:last-child { margin-bottom: 0; }
   </style>
 </head>
 <body class="bg-[#f8fafc] text-slate-800 min-h-screen font-sans antialiased flex flex-col">
@@ -649,7 +693,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   <!-- Modal 4: Skill Detail & Content Preview -->
   <div id="skill-detail-modal" class="fixed inset-0 modal-backdrop hidden flex items-center justify-center p-4 z-50">
-    <div class="bg-white w-full max-w-3xl max-h-[88vh] rounded-2xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+    <div class="bg-white w-full max-w-6xl max-h-[92vh] rounded-2xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
       <!-- Header -->
       <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between bg-slate-50/70 shrink-0">
         <div class="space-y-1.5 min-w-0 flex-1 pr-4">
@@ -665,26 +709,33 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </div>
 
       <!-- Body (Scrollable) -->
-      <div class="p-6 overflow-y-auto space-y-4.5 flex-1 text-xs">
+      <div class="p-6 overflow-y-auto space-y-4.5 flex-1 text-sm">
         <!-- Description Block -->
         <div class="p-4 bg-slate-50/80 rounded-xl border border-slate-200/80 space-y-1.5">
-          <div class="font-bold text-slate-800 flex items-center gap-1.5 text-xs">
+          <div class="font-bold text-slate-800 flex items-center gap-1.5 text-sm">
             <span>📋</span> 功能描述 (Description)
           </div>
-          <p id="detail-modal-desc" class="text-slate-600 leading-relaxed break-words text-xs"></p>
+          <p id="detail-modal-desc" class="text-slate-600 leading-relaxed break-words text-sm"></p>
         </div>
 
         <!-- Raw Content / SKILL.md Preview -->
         <div class="space-y-2">
           <div class="flex items-center justify-between">
-            <span class="font-bold text-slate-800 flex items-center gap-1.5 text-xs">
+            <span class="font-bold text-slate-800 flex items-center gap-1.5 text-sm">
               <span>📄</span> SKILL.md 文档与指令正文 (Content)
             </span>
-            <button onclick="copySkillDetailContent()" class="text-indigo-600 hover:text-indigo-800 text-[11px] font-semibold flex items-center gap-1 hover:underline">
-              <span>📋</span> 复制正文
-            </button>
+            <div class="flex items-center gap-3">
+              <div class="flex items-center bg-slate-100 rounded-lg p-0.5 border border-slate-200">
+                <button id="detail-view-btn-preview" onclick="switchDetailView('preview')" class="px-3 py-1 text-xs font-semibold rounded-md transition bg-white text-indigo-700 shadow-xs">预览</button>
+                <button id="detail-view-btn-raw" onclick="switchDetailView('raw')" class="px-3 py-1 text-xs font-semibold rounded-md transition text-slate-500 hover:text-slate-700">源码</button>
+              </div>
+              <button onclick="copySkillDetailContent()" class="text-indigo-600 hover:text-indigo-800 text-xs font-semibold flex items-center gap-1 hover:underline">
+                <span>📋</span> 复制正文
+              </button>
+            </div>
           </div>
-          <pre id="detail-modal-content" class="p-4 bg-slate-900 text-slate-100 rounded-xl text-xs font-mono overflow-x-auto max-h-96 whitespace-pre-wrap leading-relaxed select-all border border-slate-800"></pre>
+          <div id="detail-modal-preview" class="p-6 bg-white rounded-xl border border-slate-200 overflow-y-auto max-h-[60vh] prose-preview break-words"></div>
+          <pre id="detail-modal-content" class="hidden p-5 bg-slate-900 text-slate-100 rounded-xl text-sm font-mono overflow-x-auto max-h-[60vh] whitespace-pre-wrap leading-relaxed select-all border border-slate-800"></pre>
         </div>
       </div>
 
@@ -763,6 +814,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     }
 
     async function toggleAutostart(enabled) {
+      const toggle = document.getElementById('autostart-toggle');
       try {
         const res = await fetch('/api/autostart', {
           method: 'POST',
@@ -772,10 +824,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
         const data = await res.json();
         if (data.ok) {
           showToast(data.enabled ? '已成功注册 Windows 开机静默自启！' : '已取消 Windows 开机自启。');
+          if (toggle) toggle.checked = Boolean(data.enabled);
         } else {
-          showToast('设置开机自启失败', true);
+          if (toggle) toggle.checked = Boolean(data.enabled);
+          showToast('设置开机自启失败: ' + (data.error || '未知错误'), true);
         }
       } catch (e) {
+        if (toggle) toggle.checked = Boolean(enabled);
         showToast('请求异常: ' + e, true);
       }
     }
@@ -1527,7 +1582,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
       statusBadge.className = s.installed ? 'text-[10px] px-2 py-0.5 rounded-full font-semibold bg-emerald-100 text-emerald-700' : 'text-[10px] px-2 py-0.5 rounded-full font-semibold bg-slate-100 text-slate-500';
 
       const contentBox = document.getElementById('detail-modal-content');
+      const previewBox = document.getElementById('detail-modal-preview');
       contentBox.textContent = '正在加载 SKILL.md 文档正文...';
+      previewBox.innerHTML = '<span class="text-slate-400">正在加载 SKILL.md 文档正文...</span>';
+      switchDetailView('preview');
       document.getElementById('skill-detail-modal').classList.remove('hidden');
 
       updateDetailModalMountBtn();
@@ -1537,14 +1595,58 @@ HTML_PAGE = r"""<!DOCTYPE html>
         const data = await res.json();
         if (data.ok) {
           contentBox.textContent = data.content;
+          renderDetailMarkdown(data.content);
           if (data.desc) {
             document.getElementById('detail-modal-desc').textContent = data.desc;
           }
         } else {
-          contentBox.textContent = '读取文档失败: ' + (data.error || '未知错误');
+          const msg = '读取文档失败: ' + (data.error || '未知错误');
+          contentBox.textContent = msg;
+          previewBox.innerHTML = `<span class="text-rose-500">${msg}</span>`;
         }
       } catch (e) {
-        contentBox.textContent = '网络请求异常: ' + e;
+        const msg = '网络请求异常: ' + e;
+        contentBox.textContent = msg;
+        previewBox.innerHTML = `<span class="text-rose-500">${msg}</span>`;
+      }
+    }
+
+    function renderDetailMarkdown(md) {
+      const previewBox = document.getElementById('detail-modal-preview');
+      if (typeof marked === 'undefined') {
+        previewBox.innerHTML = '<span class="text-rose-500">Markdown 解析库加载失败，请切换至源码查看。</span>';
+        return;
+      }
+      // 剥离文件开头的 YAML frontmatter（--- name/description ---），预览只渲染正文
+      const body = String(md || '').replace(/^\s*---\r?\n[\s\S]*?\r?\n---\s*\r?\n?/, '');
+      let html = marked.parse(body);
+      if (typeof DOMPurify !== 'undefined') {
+        html = DOMPurify.sanitize(html);
+      }
+      previewBox.innerHTML = html;
+    }
+
+    function switchDetailView(mode) {
+      const previewBox = document.getElementById('detail-modal-preview');
+      const contentBox = document.getElementById('detail-modal-content');
+      const btnPreview = document.getElementById('detail-view-btn-preview');
+      const btnRaw = document.getElementById('detail-view-btn-raw');
+      const activeCls = ['bg-white', 'text-indigo-700', 'shadow-xs'];
+      const inactiveCls = ['text-slate-500'];
+      if (mode === 'raw') {
+        previewBox.classList.add('hidden');
+        contentBox.classList.remove('hidden');
+        btnRaw.classList.add(...activeCls);
+        btnRaw.classList.remove(...inactiveCls);
+        btnPreview.classList.remove(...activeCls);
+        btnPreview.classList.add(...inactiveCls);
+      } else {
+        contentBox.classList.add('hidden');
+        previewBox.classList.remove('hidden');
+        btnPreview.classList.add(...activeCls);
+        btnPreview.classList.remove(...inactiveCls);
+        btnRaw.classList.remove(...activeCls);
+        btnRaw.classList.add(...inactiveCls);
       }
     }
 
@@ -1891,11 +1993,19 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         elif url.path == "/api/autostart":
             enable = bool(data.get("enabled", False))
-            res = set_autostart(enable)
+            try:
+                res = set_autostart(enable)
+                # 回读注册表二次校验，确保状态真正落盘
+                actual = get_autostart_status()
+                if actual != enable:
+                    raise RuntimeError("注册表写入后校验不一致")
+                payload = {"ok": True, "enabled": actual}
+            except Exception as e:
+                payload = {"ok": False, "enabled": get_autostart_status(), "error": str(e)}
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"ok": True, "enabled": res}).encode("utf-8"))
+            self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
         elif url.path == "/api/sync":
             cfg = load_config()

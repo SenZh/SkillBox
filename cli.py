@@ -58,7 +58,11 @@ def cmd_start():
     clean_pid()
     print("[*] 正在后台启动 SkillBox 守护服务...")
     python_exe = sys.executable
-    pythonw_exe = python_exe.lower().replace("python.exe", "pythonw.exe")
+    # 仅替换文件名部分，保留路径原始大小写（避免整条路径被 lower() 破坏）
+    if python_exe.lower().endswith("python.exe"):
+        pythonw_exe = python_exe[:-len("python.exe")] + "pythonw.exe"
+    else:
+        pythonw_exe = python_exe
     if not os.path.exists(pythonw_exe):
         pythonw_exe = python_exe
 
@@ -204,10 +208,18 @@ def cmd_update():
 def cmd_autostart(action):
     from app import set_autostart, get_autostart_status
     if action in ("on", "enable", "true", "1"):
-        set_autostart(True)
+        try:
+            set_autostart(True)
+        except Exception as e:
+            print(f"[!] 设置开机自启动失败: {e}")
+            return 1
         print("[OK] 已成功注册 Windows 开机静默自启动！")
     elif action in ("off", "disable", "false", "0"):
-        set_autostart(False)
+        try:
+            set_autostart(False)
+        except Exception as e:
+            print(f"[!] 取消开机自启动失败: {e}")
+            return 1
         print("[OK] 已成功取消 Windows 开机自启动。")
     else:
         st = get_autostart_status()
