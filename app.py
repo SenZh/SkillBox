@@ -15,6 +15,7 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "config.json"
 CACHE_BASE_DIR = BASE_DIR / ".skillbox_cache"
 BUILTIN_SKILLS_DIR = BASE_DIR / "builtin_skills"
+ASSETS_DIR = BASE_DIR / "assets"
 LOG_FILE = BASE_DIR / "skillbox.log"
 
 def log(msg, level="INFO"):
@@ -607,6 +608,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SkillBox - AI 技能管理器</title>
+  <link rel="icon" type="image/png" href="/assets/icon.png">
+  <link rel="apple-touch-icon" href="/assets/icon-256.png">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
@@ -648,7 +651,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <body class="bg-[#f8fafc] text-slate-800 min-h-screen font-sans antialiased flex flex-col">
   <!-- Top Navigation Header -->
   <header class="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/80 shadow-xs">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
+    <div class="w-full px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
       <!-- Logo & Primary Tabs -->
       <div class="flex items-center gap-8 min-w-0">
         <div class="flex items-center gap-2.5 shrink-0 cursor-pointer" onclick="switchPage('skills')">
@@ -687,7 +690,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </header>
 
   <!-- Main Content Container -->
-  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
+  <main class="flex-1 w-full px-4 sm:px-6 lg:px-8 py-6">
     <!-- ================= PAGE 1: SKILLS WORKSPACE ================= -->
     <div id="page-skills" class="space-y-4">
       <!-- Toolbar Filter Bar -->
@@ -770,7 +773,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </div>
 
     <!-- ================= PAGE 2: SETTINGS & REPOSITORIES ================= -->
-    <div id="page-settings" class="hidden max-w-4xl mx-auto space-y-6">
+    <div id="page-settings" class="hidden max-w-5xl mx-auto space-y-6">
       <!-- Section 1: Global Default Path -->
       <div class="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
         <div class="flex items-start justify-between gap-4 mb-4">
@@ -932,7 +935,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   <!-- Modal 4: Skill Detail & Content Preview -->
   <div id="skill-detail-modal" class="fixed inset-0 modal-backdrop hidden flex items-center justify-center p-4 z-50">
-    <div class="bg-white w-full max-w-6xl max-h-[92vh] rounded-2xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+    <div class="bg-white w-full max-w-[90vw] max-h-[92vh] rounded-2xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
       <!-- Header -->
       <div class="px-6 py-4 border-b border-slate-100 flex items-start justify-between bg-slate-50/70 shrink-0">
         <div class="space-y-1.5 min-w-0 flex-1 pr-4">
@@ -1466,7 +1469,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       // 全局平铺视图 或 全局搜索结果视图
       if (currentViewMode === 'grid' || isSearching) {
         container.innerHTML = `
-          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
             ${skills.map(s => renderSingleSkillCard(s, isSearching)).join('')}
           </div>
         `;
@@ -1509,7 +1512,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 <span class="text-slate-400 font-normal">(${subFolders.length} 个，点击卡片进入下一级)</span>
               </span>
             </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 mb-6">
+            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3.5 mb-6">
               ${subFolders.map(f => {
                 const folderOverride = (globalConfig.folder_overrides || {})[f.fullPath];
                 return `
@@ -1551,7 +1554,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 <span class="text-slate-400 font-normal">(${directSkills.length} 个)</span>
               </span>
             </div>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
               ${directSkills.map(s => renderSingleSkillCard(s, false)).join('')}
             </div>
           </div>
@@ -1965,6 +1968,26 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(HTML_PAGE.encode("utf-8"))
+        elif url.path.startswith("/assets/"):
+            # 静态资源（图标等），只允许 assets 目录内文件，防止路径穿越
+            rel = url.path[len("/assets/"):]
+            safe = (ASSETS_DIR / rel).resolve()
+            try:
+                inside = str(safe).startswith(str(ASSETS_DIR.resolve()))
+            except Exception:
+                inside = False
+            if not inside or not safe.is_file():
+                self.send_response(404)
+                self.end_headers()
+                return
+            ctypes_map = {".png": "image/png", ".ico": "image/x-icon",
+                          ".svg": "image/svg+xml", ".jpg": "image/jpeg"}
+            ctype = ctypes_map.get(safe.suffix.lower(), "application/octet-stream")
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "max-age=86400")
+            self.end_headers()
+            self.wfile.write(safe.read_bytes())
         elif url.path == "/api/config":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

@@ -14,6 +14,8 @@ import webbrowser
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
+ICON_ICO = BASE_DIR / "assets" / "icon.ico"
+ICON_PNG = BASE_DIR / "assets" / "icon.png"
 
 
 # ============================================================
@@ -157,7 +159,8 @@ def _create_shortcut_windows(target_dir):
     # 快捷方式指向 一个一次性引导：启动服务后打开应用窗口
     python_exe, app_script = _launcher_command()
     lnk_path = target_dir / "SkillBox.lnk"
-    icon = python_exe if os.path.exists(python_exe) else ""
+    # 优先使用自带图标，缺失时回退 python 可执行文件图标
+    icon = str(ICON_ICO) if ICON_ICO.exists() else (python_exe if os.path.exists(python_exe) else "")
     # 用 cli.py 的 gui 命令作为入口：启动服务并开应用窗口
     cli_script = str((BASE_DIR / "cli.py").resolve())
     ps = (
@@ -196,7 +199,7 @@ def _create_shortcut_linux():
         "Comment=AI 技能管理器\n"
         f"Exec={python_exe} {BASE_DIR / 'cli.py'} gui\n"
         f"Path={BASE_DIR}\n"
-        "Icon=applications-system\n"
+        f"Icon={ICON_PNG if ICON_PNG.exists() else 'applications-system'}\n"
         "Terminal=false\n"
         "Categories=Development;\n"
     )

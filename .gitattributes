@@ -5,3 +5,8 @@ skillbox text eol=lf
 *.cmd  text eol=crlf
 *.py   text eol=lf
 *.md   text eol=lf
+
+# 二进制资源，禁止行尾转换
+*.png  binary
+*.ico  binary
+*.icns binary

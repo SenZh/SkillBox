@@ -120,22 +120,30 @@ SkillBox 将所有运维操作统一收拢在 **`skillbox`** 命令中（Windows
 
 ```text
 skillbox/
-├── skillbox.bat             # 统一 CLI 命令与启动入口（双击默认启动）
+├── skillbox.bat             # Windows 统一 CLI 命令与启动入口
+├── skillbox                 # macOS / Linux 统一 CLI 启动入口
 ├── start.bat                # 兼容启动快捷方式（调用 skillbox start）
-├── cli.py                   # CLI 命令行逻辑引擎（启停、重启、状态、更新、日志）
+├── cli.py                   # CLI 命令行逻辑引擎（启停、安装、图标、更新、resolve/commit）
 ├── app.py                   # SkillBox 服务端核心（多仓库引擎 + 递归扫描 + 前端 SPA）
+├── platform_utils.py        # 跨平台工具（应用模式浏览器、桌面图标、启动器）
+├── builtin_skills/          # 工具自带技能（随版本分发，默认自动挂载）
+│   └── skillbox/            # skillbox 命令使用说明技能
+├── assets/                  # 图标资源（icon.ico / icon.png，多尺寸）
+├── tools/
+│   └── gen_icon.py          # 图标生成脚本（Pillow 绘制，可复现）
 ├── run_tests.py             # 自动化单元测试运行器
-├── tests/                   # 自动化测试套件 (全量 10 个用例)
+├── tests/                   # 自动化测试套件
 │   ├── test_config.py       # 配置管理与持久化测试
 │   ├── test_folder_mount.py # 目录级挂载与继承优先级测试
 │   ├── test_scanner.py      # 元数据解析与 Tag 父目录名规则测试
 │   ├── test_symlink.py      # Junction 挂载与安全解绑测试
-│   ├── test_autostart.py    # Windows 开机自启注册测试
+│   ├── test_autostart.py    # 开机自启注册测试
 │   └── test_api.py          # HTTP REST API 全链路测试
 ├── docs/
 │   ├── architecture.md      # 系统架构设计文档
 │   └── changelog.md         # 变更日志 (Keep a Changelog)
 ├── ROADMAP.md               # 产品演进路线图
+├── .gitattributes           # 跨平台行尾规范化
 ├── .gitignore               # Git 忽略配置
 └── README.md                # 本说明文档
 ```
