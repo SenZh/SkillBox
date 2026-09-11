@@ -75,48 +75,114 @@ def save_config(cfg):
 AUTOSTART_APP_NAME = "SkillBox"
 AUTOSTART_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
+def _autostart_unix_file():
+    """返回 Unix 平台的自启配置文件路径"""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "LaunchAgents" / "com.skillbox.agent.plist"
+    return Path.home() / ".config" / "systemd" / "user" / "skillbox.service"
+
 def get_autostart_status():
-    """获取当前用户 Windows 开机自启动状态"""
-    if sys.platform != "win32":
-        return False
-    import winreg
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_READ) as key:
-            winreg.QueryValueEx(key, AUTOSTART_APP_NAME)
-            return True
-    except WindowsError:
-        return False
+    """获取当前用户开机自启动状态（跨平台）"""
+    if sys.platform == "win32":
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_READ) as key:
+                winreg.QueryValueEx(key, AUTOSTART_APP_NAME)
+                return True
+        except WindowsError:
+            return False
+    return _autostart_unix_file().exists()
 
 def set_autostart(enable: bool):
-    """注册或注销 Windows 开机静默自启动 (无需管理员权限)
+    """注册或注销开机静默自启动（跨平台，均无需管理员权限）
+
+    - Windows: 注册表 HKCU\\...\\Run
+    - Linux:   systemd user service (~/.config/systemd/user/skillbox.service)
+    - macOS:   LaunchAgent (~/Library/LaunchAgents/com.skillbox.agent.plist)
 
     成功返回 True；失败抛出 RuntimeError（由调用方负责向用户回传真实原因）。
     """
-    if sys.platform != "win32":
-        raise RuntimeError("当前系统非 Windows，不支持开机自启动")
-    import winreg
-    # 仅替换文件名部分，保留路径原始大小写（避免整条路径被 lower() 破坏）
+    if sys.platform == "win32":
+        import winreg
+        python_exe = sys.executable
+        if python_exe.lower().endswith("python.exe"):
+            pythonw_exe = python_exe[:-len("python.exe")] + "pythonw.exe"
+        else:
+            pythonw_exe = python_exe
+        if not os.path.exists(pythonw_exe):
+            pythonw_exe = python_exe
+        app_script = str((BASE_DIR / "app.py").resolve())
+        cmd_str = f'"{pythonw_exe}" "{app_script}" --silent'
+        try:
+            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_SET_VALUE) as key:
+                if enable:
+                    winreg.SetValueEx(key, AUTOSTART_APP_NAME, 0, winreg.REG_SZ, cmd_str)
+                else:
+                    try:
+                        winreg.DeleteValue(key, AUTOSTART_APP_NAME)
+                    except FileNotFoundError:
+                        pass
+        except OSError as e:
+            raise RuntimeError(f"写入注册表失败: {e}")
+        return enable
+
+    # Unix 平台
+    cfg_file = _autostart_unix_file()
     python_exe = sys.executable
-    if python_exe.lower().endswith("python.exe"):
-        pythonw_exe = python_exe[:-len("python.exe")] + "pythonw.exe"
-    else:
-        pythonw_exe = python_exe
-    if not os.path.exists(pythonw_exe):
-        pythonw_exe = python_exe
     app_script = str((BASE_DIR / "app.py").resolve())
-    cmd_str = f'"{pythonw_exe}" "{app_script}" --silent'
+    if not enable:
+        try:
+            if cfg_file.exists():
+                cfg_file.unlink()
+            if sys.platform.startswith("linux"):
+                subprocess.run(["systemctl", "--user", "disable", "skillbox.service"],
+                               capture_output=True)
+        except Exception as e:
+            raise RuntimeError(f"移除自启配置失败: {e}")
+        return False
+
     try:
-        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_SET_VALUE) as key:
-            if enable:
-                winreg.SetValueEx(key, AUTOSTART_APP_NAME, 0, winreg.REG_SZ, cmd_str)
-            else:
-                try:
-                    winreg.DeleteValue(key, AUTOSTART_APP_NAME)
-                except FileNotFoundError:
-                    pass
-    except OSError as e:
-        raise RuntimeError(f"写入注册表失败: {e}")
-    return enable
+        cfg_file.parent.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "darwin":
+            content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.skillbox.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{python_exe}</string>
+        <string>{app_script}</string>
+        <string>--silent</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>WorkingDirectory</key><string>{BASE_DIR}</string>
+</dict>
+</plist>
+"""
+            cfg_file.write_text(content, encoding="utf-8")
+            subprocess.run(["launchctl", "unload", str(cfg_file)], capture_output=True)
+            subprocess.run(["launchctl", "load", str(cfg_file)], capture_output=True)
+        else:
+            content = f"""[Unit]
+Description=SkillBox AI Skill Manager
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={python_exe} {app_script} --silent
+WorkingDirectory={BASE_DIR}
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+"""
+            cfg_file.write_text(content, encoding="utf-8")
+            subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+            subprocess.run(["systemctl", "--user", "enable", "skillbox.service"], capture_output=True)
+    except Exception as e:
+        raise RuntimeError(f"写入自启配置失败: {e}")
+    return True
 
 def git_cmd(args, cwd=None):
     creation_flags = 0x08000000 if sys.platform == "win32" else 0

@@ -68,21 +68,36 @@
 
 ## 🚀 快速上手与统一 CLI
 
-SkillBox 将所有运维操作统一收拢在 **`skillbox.bat`**（或快捷方式 `start.bat`）中：
+**首次使用一键完成**（命令注册 + 桌面图标 + 开机自启 + 启动服务）：
+
+```bash
+skillbox install init
+```
+
+之后**双击桌面 SkillBox 图标**即可启动服务，并以独立应用窗口（无地址栏，接近原生客户端）打开控制台。
+
+SkillBox 将所有运维操作统一收拢在 **`skillbox`** 命令中（Windows 为 `skillbox.bat`）：
 
 | 操作指令 | 效果说明 |
 | :--- | :--- |
-| **双击 `skillbox.bat` 或 `start.bat`** | **默认后台静默启动**，不留黑色 CMD 窗口，自动在浏览器打开控制台 |
+| **`skillbox install [init]`** | 一键安装：注册命令到 PATH + 创建桌面图标 + 开机自启（加 `init` 同时启动服务） |
+| **`skillbox shortcut`** | 仅创建桌面快捷方式（双击即启动并打开应用窗口） |
+| **`skillbox gui`** | 启动服务并以独立应用窗口打开（桌面图标调用入口） |
 | **`skillbox start`** (或 `up`) | 后台静默启动服务（自动探活自愈，不重复拉起） |
 | **`skillbox stop`** (或 `down`) | 安全停止后台服务并释放端口占用 |
 | **`skillbox restart`** | 一键重启服务 |
 | **`skillbox status`** | 查看当前运行状态、后台 PID、服务端口与开机自启情况 |
-| **`skillbox open`** | 在浏览器中打开控制台（`http://127.0.0.1:7860`） |
+| **`skillbox open`** | 以应用窗口打开控制台（`http://127.0.0.1:7860`） |
 | **`skillbox update`** | 触发所有 Git 仓库源增量拉取最新提交 |
+| **`skillbox resolve <name>`** | 定位技能源真身路径及 Git 目录（未被 Git 管理会明确提示） |
+| **`skillbox commit <name> -m s`** | 白名单提交并推送该技能改动（仅提交该技能目录） |
 | **`skillbox log [N]`** | 查看后台最近运行审计日志（默认 50 行） |
-| **`skillbox autostart on / off`** | 一键开启 / 关闭 Windows 开机静默自启（无需管理员提权） |
+| **`skillbox autostart on / off`** | 一键开启 / 关闭开机静默自启（无需管理员提权，跨平台） |
 | **`skillbox run`** | 前台直接运行服务（用于排错调试查看实时日志） |
 | **`skillbox test`** | 一键运行全量自动化单元测试套件 |
+| **`skillbox uninstall`** | 移除命令注册与桌面快捷方式 |
+
+> **跨平台**：Windows / macOS / Linux 三平台均支持。打开控制台优先使用 Chrome/Edge 应用模式（无地址栏独立窗口），找不到时自动回退系统默认浏览器。
 
 ---
 

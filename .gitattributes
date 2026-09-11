@@ -1,0 +1,7 @@
+# 统一行尾：脚本文件强制对应平台风格，避免跨平台执行报错
+*.sh   text eol=lf
+skillbox text eol=lf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.py   text eol=lf
+*.md   text eol=lf

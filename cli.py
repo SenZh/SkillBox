@@ -9,13 +9,20 @@ import os
 import sys
 import time
 import subprocess
-import webbrowser
 import urllib.request
 from pathlib import Path
+
+from platform_utils import open_in_app_mode, create_desktop_shortcut, remove_desktop_shortcut
 
 BASE_DIR = Path(__file__).resolve().parent
 PID_FILE = BASE_DIR / ".skillbox.pid"
 DEFAULT_PORT = 7860
+
+def open_ui(port):
+    """以应用模式（无地址栏独立窗口）打开 WebUI，找不到 Chrome/Edge 则回退默认浏览器"""
+    url = f"http://127.0.0.1:{port or DEFAULT_PORT}"
+    mode = open_in_app_mode(url)
+    return url, mode
 
 def check_alive(port=DEFAULT_PORT):
     try:
@@ -51,8 +58,8 @@ def cmd_start():
 
     if port:
         print(f"[*] SkillBox 服务已在后台运行中 (PID: {pid or '未知'}, 端口: {port})")
-        print(f"[*] 正在打开控制台: {url}")
-        webbrowser.open(url)
+        url, mode = open_ui(port)
+        print(f"[*] 已{'以应用窗口' if mode == 'app' else '用默认浏览器'}打开控制台: {url}")
         return 0
 
     clean_pid()
@@ -92,11 +99,35 @@ def cmd_start():
 
     if started:
         print(f"[OK] SkillBox 后台服务已成功就绪: {url}")
-        webbrowser.open(url)
+        url, mode = open_ui(DEFAULT_PORT)
+        print(f"[*] 已{'以应用窗口' if mode == 'app' else '用默认浏览器'}打开控制台: {url}")
         return 0
     else:
         print("[!] 启动未在预期时间内响应，请运行 `skillbox run` 查看前台实时报错日志。")
         return 1
+
+def cmd_gui():
+    """
+    桌面图标双击入口：确保服务就绪后以应用模式打开独立窗口。
+    静默优先、无黑窗；服务已在运行时直接开窗。
+    """
+    pid, port = get_running_info()
+    if port:
+        open_ui(port)
+        return 0
+    # 服务未运行 → 先启动（后台无黑窗），再开窗
+    rc = cmd_start()
+    return rc
+
+def cmd_create_shortcut():
+    """创建桌面快捷方式（双击即启动服务并打开 WebUI）"""
+    path = create_desktop_shortcut()
+    if path:
+        print(f"[OK] 已创建桌面快捷方式: {path}")
+        print("[*] 双击该图标即可启动 SkillBox 并打开控制台窗口。")
+        return 0
+    print("[!] 创建快捷方式失败（可能无桌面目录写权限）。")
+    return 1
 
 def cmd_stop():
     print("[*] 正在停止 SkillBox 后台服务...")
@@ -167,9 +198,8 @@ def cmd_status():
 
 def cmd_open():
     pid, port = get_running_info()
-    url = f"http://127.0.0.1:{port or DEFAULT_PORT}"
-    print(f"[*] 正在打开控制台: {url}")
-    webbrowser.open(url)
+    url, mode = open_ui(port)
+    print(f"[*] 已{'以应用窗口' if mode == 'app' else '用默认浏览器'}打开控制台: {url}")
     return 0
 
 def cmd_run():
@@ -357,54 +387,179 @@ def _set_user_path(new_path):
     except Exception:
         pass
 
-def cmd_install():
-    """将 SkillBox 命令注册到当前用户 PATH，使全局任意终端可直接调用 skillbox"""
-    if sys.platform != "win32":
-        print("[!] 当前仅支持 Windows 一键安装命令。macOS/Linux 请手动将 skillbox 脚本加入 PATH。")
-        return 1
+def cmd_install(init=False):
+    """
+    一键安装 SkillBox：
+    1. 将 skillbox 命令注册到用户 PATH（跨平台）
+    2. 创建桌面快捷方式（双击即启动服务并打开 WebUI）
+    3. 注册开机自启
+    4. 启动服务
+    以 init=True 调用时，全流程一次完成（首次使用一键配置）。
+    """
+    print("=" * 50)
+    print("        SkillBox 一键安装")
+    print("=" * 50)
+    ok = True
 
-    bin_dir = str(BASE_DIR)
-    launcher = BASE_DIR / "skillbox.bat"
-    if not launcher.exists():
-        print(f"[!] 未找到启动器 {launcher}，无法安装。")
-        return 1
+    # 1. PATH 注册
+    if sys.platform == "win32":
+        if _install_path_windows():
+            print("[OK] 1/4 skillbox 命令已加入用户 PATH（需重开终端生效）")
+        else:
+            print("[*] 1/4 skillbox 命令已在 PATH 中")
+    else:
+        if _install_path_unix():
+            print("[OK] 1/4 skillbox 命令已写入 shell 配置（新终端生效）")
+        else:
+            print("[*] 1/4 skillbox 命令已配置")
 
+    # 2. 桌面快捷方式
     try:
-        cur = _get_user_path()
-        parts = [p for p in cur.split(";") if p.strip()]
-        if any(p.rstrip("\\").lower() == bin_dir.rstrip("\\").lower() for p in parts):
-            print(f"[*] 已安装：{bin_dir} 已在用户 PATH 中，无需重复安装。")
-            print("[*] 若当前终端仍无法识别 skillbox，请重开一个终端窗口。")
-            return 0
-        parts.append(bin_dir)
-        _set_user_path(";".join(parts))
-        print(f"[OK] 已将 {bin_dir} 写入当前用户 PATH。")
-        print("[*] 请【重开一个终端窗口】后执行 `skillbox help` 验证。")
-        return 0
+        path = create_desktop_shortcut()
+        if path:
+            print(f"[OK] 2/4 桌面快捷方式已创建: {path}")
+        else:
+            print("[!] 2/4 桌面快捷方式创建失败（可忽略，不影响命令行使用）")
     except Exception as e:
-        print(f"[!] 安装失败: {e}")
-        return 1
+        print(f"[!] 2/4 桌面快捷方式创建异常: {e}")
+
+    # 3. 开机自启
+    try:
+        from app import set_autostart
+        set_autostart(True)
+        print("[OK] 3/4 已注册开机自启")
+    except Exception as e:
+        print(f"[!] 3/4 开机自启注册失败: {e}")
+
+    # 4. 启动服务
+    if init:
+        try:
+            rc = cmd_start()
+            if rc == 0:
+                print("[OK] 4/4 服务已启动并打开控制台")
+            else:
+                print("[!] 4/4 服务启动未完成，可稍后执行 `skillbox start`")
+        except Exception as e:
+            print(f"[!] 4/4 服务启动异常: {e}")
+    else:
+        print("[*] 4/4 已跳过服务启动（执行 `skillbox start` 可启动）")
+
+    print("=" * 50)
+    return 0 if ok else 1
+
+def _install_path_windows():
+    """Windows: 写 HKCU 用户 PATH。返回 True 表示本次新增，False 表示已存在"""
+    bin_dir = str(BASE_DIR)
+    cur = _get_user_path()
+    parts = [p for p in cur.split(";") if p.strip()]
+    if any(p.rstrip("\\").lower() == bin_dir.rstrip("\\").lower() for p in parts):
+        return False
+    parts.append(bin_dir)
+    _set_user_path(";".join(parts))
+    return True
+
+def _install_path_unix():
+    """
+    macOS/Linux: 在用户 shell 配置中追加 PATH，并软链到 ~/.local/bin。
+    返回 True 表示本次新增，False 表示已存在。
+    """
+    bin_dir = str(BASE_DIR)
+    # 优先软链到 ~/.local/bin（多数发行版已在 PATH 中）
+    local_bin = Path.home() / ".local" / "bin"
+    linked = False
+    try:
+        local_bin.mkdir(parents=True, exist_ok=True)
+        target = local_bin / "skillbox"
+        launcher = BASE_DIR / "skillbox"
+        if launcher.exists():
+            if target.exists() or target.is_symlink():
+                target.unlink()
+            target.symlink_to(launcher)
+            linked = True
+    except Exception:
+        pass
+
+    # 写入 shell 配置作为兜底
+    rc_files = []
+    shell = os.environ.get("SHELL", "")
+    if "zsh" in shell:
+        rc_files.append(Path.home() / ".zshrc")
+    rc_files.append(Path.home() / ".bashrc")
+    rc_files.append(Path.home() / ".profile")
+    marker = "# >>> SkillBox PATH >>>"
+    already = False
+    for rc in rc_files:
+        try:
+            if rc.exists():
+                text = rc.read_text(encoding="utf-8", errors="ignore")
+                if marker in text:
+                    already = True
+                    break
+        except Exception:
+            continue
+    if not already:
+        for rc in rc_files:
+            try:
+                with open(rc, "a", encoding="utf-8") as f:
+                    f.write(f"\n{marker}\nexport PATH=\"$PATH:{bin_dir}:$HOME/.local/bin\"\n# <<< SkillBox PATH <<<\n")
+                break
+            except Exception:
+                continue
+    return (not already) or linked
+
+def cmd_uninstall_shortcut():
+    """移除桌面快捷方式"""
+    n = remove_desktop_shortcut()
+    if n:
+        print(f"[OK] 已移除 {n} 个桌面快捷方式。")
+        return 0
+    print("[*] 未找到桌面快捷方式，无需移除。")
+    return 0
 
 def cmd_uninstall():
     """从当前用户 PATH 中移除 SkillBox 命令"""
-    if sys.platform != "win32":
-        print("[!] 当前仅支持 Windows。")
-        return 1
     bin_dir = str(BASE_DIR)
-    try:
-        cur = _get_user_path()
-        parts = [p for p in cur.split(";") if p.strip()]
-        new_parts = [p for p in parts if p.rstrip("\\").lower() != bin_dir.rstrip("\\").lower()]
-        if len(new_parts) == len(parts):
-            print(f"[*] 未安装：{bin_dir} 不在用户 PATH 中。")
+    if sys.platform == "win32":
+        try:
+            cur = _get_user_path()
+            parts = [p for p in cur.split(";") if p.strip()]
+            new_parts = [p for p in parts if p.rstrip("\\").lower() != bin_dir.rstrip("\\").lower()]
+            if len(new_parts) == len(parts):
+                print(f"[*] 未安装：{bin_dir} 不在用户 PATH 中。")
+                return 0
+            _set_user_path(";".join(new_parts))
+            print(f"[OK] 已从当前用户 PATH 中移除 {bin_dir}。")
+            print("[*] 请【重开一个终端窗口】使变更生效。")
             return 0
-        _set_user_path(";".join(new_parts))
-        print(f"[OK] 已从当前用户 PATH 中移除 {bin_dir}。")
-        print("[*] 请【重开一个终端窗口】使变更生效。")
+        except Exception as e:
+            print(f"[!] 卸载失败: {e}")
+            return 1
+    else:
+        # Unix: 移除软链 + shell 配置中的 PATH 段
+        removed = False
+        try:
+            target = Path.home() / ".local" / "bin" / "skillbox"
+            if target.exists() or target.is_symlink():
+                target.unlink()
+                removed = True
+        except Exception:
+            pass
+        for rc in [Path.home() / ".zshrc", Path.home() / ".bashrc", Path.home() / ".profile"]:
+            try:
+                if rc.exists():
+                    text = rc.read_text(encoding="utf-8", errors="ignore")
+                    if "# >>> SkillBox PATH >>>" in text:
+                        import re
+                        text = re.sub(r"\n?# >>> SkillBox PATH >>>.*?# <<< SkillBox PATH <<<\n?", "\n", text, flags=re.DOTALL)
+                        rc.write_text(text, encoding="utf-8")
+                        removed = True
+            except Exception:
+                continue
+        if removed:
+            print("[OK] 已从用户环境移除 skillbox 命令。")
+        else:
+            print("[*] 未找到 skillbox 命令配置。")
         return 0
-    except Exception as e:
-        print(f"[!] 卸载失败: {e}")
-        return 1
 
 def print_help():
     print("""
@@ -416,16 +571,18 @@ SkillBox 统一命令行管理工具 (v0.1)
   skillbox stop  | down        安全停止后台服务并释放端口
   skillbox restart             重启后台服务
   skillbox status              查看当前服务运行状态、PID、端口与开机自启
-  skillbox open                在浏览器中打开控制台 (http://127.0.0.1:7860)
+  skillbox open                以应用窗口打开控制台 (http://127.0.0.1:7860)
+  skillbox gui                 启动服务并以独立应用窗口打开（桌面图标调用入口）
   skillbox update              触发所有 Git 仓库源增量拉取更新
   skillbox resolve <name>      定位技能源真身路径及其 Git 目录（未被 Git 管理会明确提示）
   skillbox commit <name> [-m s] 提交并推送该技能源仓库变更（仅提交该技能目录，白名单安全提交）
-  skillbox autostart [on/off]  设置或取消 Windows 开机静默自启动
+  skillbox autostart [on/off]  设置或取消开机静默自启动
   skillbox run                 前台直接运行服务 (用于排错调试查看日志)
   skillbox log [N]             查看后台最近 N 行运行日志 (默认 50 行)
   skillbox test                运行全量自动化单元测试套件
-  skillbox install             将 skillbox 命令注册到用户 PATH（安装后全局可用，需重开终端）
-  skillbox uninstall           从用户 PATH 中移除 skillbox 命令
+  skillbox install [init]      一键安装：注册命令 + 桌面图标 + 开机自启（加 init 则同时启动服务）
+  skillbox shortcut            仅创建桌面快捷方式
+  skillbox uninstall           移除命令注册与桌面快捷方式
   skillbox help                显示此帮助说明
 """)
 
@@ -446,6 +603,8 @@ def main():
         return cmd_status()
     elif cmd in ("open", "ui", "web"):
         return cmd_open()
+    elif cmd == "gui":
+        return cmd_gui()
     elif cmd in ("log", "logs"):
         count = int(args[1]) if len(args) > 1 and args[1].isdigit() else 50
         return cmd_log(count)
@@ -479,7 +638,9 @@ def main():
     elif cmd in ("test", "tests"):
         return cmd_test()
     elif cmd in ("install", "setup"):
-        return cmd_install()
+        return cmd_install(init=("init" in [a.lower() for a in args[1:]] or "all" in [a.lower() for a in args[1:]]))
+    elif cmd in ("shortcut", "desktop"):
+        return cmd_create_shortcut()
     elif cmd in ("uninstall", "remove"):
         return cmd_uninstall()
     elif cmd in ("help", "-h", "--help"):

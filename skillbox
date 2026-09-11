@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# SkillBox 统一命令行入口 (macOS / Linux)
+# 等价于 Windows 的 skillbox.bat
+cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")" || exit 1
+exec python3 cli.py "$@"
