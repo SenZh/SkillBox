@@ -10,7 +10,7 @@ from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 def _resolve_base_dir():
     """
@@ -390,17 +390,17 @@ def auto_update_scheduler():
                     # 达到定时周期触发 pull
                     if now - last_ts >= interval_min * 60:
                         try:
-                            print(f"[*] [Auto-Update] 触发仓库 [{s.get('name')}] 自动拉取更新...", flush=True)
+                            log(f"[Auto-Update] 触发仓库 [{s.get('name')}] 定时自动拉取更新...")
                             pull_single_source(s)
                             updated_any = True
-                            print(f"[✓] [Auto-Update] 仓库 [{s.get('name')}] 自动更新成功，已挂载软链接实时生效！", flush=True)
+                            log(f"[Auto-Update] 仓库 [{s.get('name')}] 定时自动更新成功 (时间: {s.get('last_updated')})，已挂载软链接实时生效！")
                         except Exception as e:
-                            print(f"[!] [Auto-Update] 仓库 [{s.get('name')}] 自动更新失败: {e}", flush=True)
+                            log(f"[Auto-Update] 仓库 [{s.get('name')}] 定时自动更新失败: {e}", level="ERROR")
 
             if updated_any:
                 save_config(cfg)
         except Exception as e:
-            pass
+            log(f"[Auto-Update] 调度器循环异常: {e}", level="ERROR")
 
 def resolve_skill_install_dir(skill_name, folder_path, cfg):
     """
@@ -1062,6 +1062,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
     async function init() {
       await loadConfig();
       await loadSkills();
+
+      // 窗口重新聚焦时，如果当前处于设置页，静默刷新最新仓库状态与更新时间
+      window.addEventListener('focus', () => {
+        if (activePage === 'settings') {
+          loadConfig();
+        }
+      });
+
+      // 每 30 秒后台静默同步一次配置，确保长时间挂着的页面能实时呈现定时更新时间
+      setInterval(() => {
+        if (document.visibilityState === 'visible' && activePage === 'settings') {
+          loadConfig();
+        }
+      }, 30000);
     }
 
     // Page Switching (单页 Tab 切换)
@@ -1082,6 +1096,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         tabSkills.className = "px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-slate-900 transition flex items-center gap-1.5";
         pageSettings.classList.remove('hidden');
         pageSkills.classList.add('hidden');
+        // 切入「仓库与配置」页面时立即静默同步最新仓库状态和更新时间
+        loadConfig();
       }
     }
 
