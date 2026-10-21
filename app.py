@@ -50,17 +50,47 @@ CACHE_BASE_DIR = BASE_DIR / ".skillbox_cache"
 BUILTIN_SKILLS_DIR = RESOURCE_DIR / "builtin_skills"
 ASSETS_DIR = RESOURCE_DIR / "assets"
 LOG_FILE = BASE_DIR / "skillbox.log"
+LOG_MAX_BYTES = 8 * 1024 * 1024   # 单文件上限 8MB，超限轮转为 skillbox.log.1（只保留一个历史文件）
+LOG_CHECK_EVERY = 50              # 每写入 50 行才做一次体积检查，避免每行都 stat
+
+_log_write_count = 0
+_log_lock = threading.Lock()
+
+def _rotate_log_if_needed():
+    """日志按体积轮转：超过上限时把 skillbox.log 改名为 skillbox.log.1（覆盖旧历史），再继续写新文件"""
+    global _log_write_count
+    _log_write_count += 1
+    if _log_write_count < LOG_CHECK_EVERY:
+        return
+    _log_write_count = 0
+    try:
+        if not LOG_FILE.exists() or LOG_FILE.stat().st_size < LOG_MAX_BYTES:
+            return
+        backup = LOG_FILE.with_name(LOG_FILE.name + ".1")
+        try:
+            if backup.exists():
+                backup.unlink()
+            LOG_FILE.rename(backup)
+        except OSError:
+            # Windows 上文件被其他句柄短暂占用时退化为拷贝+清空
+            backup.write_bytes(LOG_FILE.read_bytes())
+            LOG_FILE.write_text("", encoding="utf-8")
+    except Exception:
+        pass
 
 def log(msg, level="INFO"):
     """记录运行日志并同时输出到标准输出与 skillbox.log 文件"""
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{timestamp}] [{level}] {msg}"
     print(line, flush=True)
-    try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
+    with _log_lock:
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+            _rotate_log_if_needed()
+        except Exception:
+            pass
+
 
 DEFAULT_CONFIG = {
     "default_install_to": str(Path.home() / ".agents" / "skills"),
@@ -251,6 +281,14 @@ def git_cmd(args, cwd=None):
         raise RuntimeError(err or f"Git command failed: {' '.join(args)}")
     return res.stdout.strip()
 
+def git_cmd_safe(args, cwd=None):
+    """不抛异常的 git 调用，用于 pull 前后的一致性检查等容错场景；返回 (是否成功, 输出)"""
+    try:
+        return True, git_cmd(args, cwd=cwd)
+    except Exception as e:
+        return False, str(e)
+
+
 def safe_create_link(source_path: Path, target_link: Path):
     """
     创建目录联结或符号链接：
@@ -346,7 +384,94 @@ def parse_skill_metadata(skill_dir):
     except Exception:
         return "无法读取描述", []
 
+def _stash_conflict_dir(cache_dir):
+    """冲突现场落盘目录：<cache>/../.skillbox_conflicts/<仓库>/<时间戳>/，每次冲突单独建目录，互不覆盖"""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    return CACHE_BASE_DIR / ".skillbox_conflicts" / Path(cache_dir).name / stamp
+
+def _export_stash_snapshot(cache_dir, stash_ref="stash@{0}"):
+    """
+    把 stash 快照落盘留档：
+    - changes.patch：可直接 git apply 回缓存仓库的补丁
+    - 各文件的最新完整内容：方便直接查看/复制本地自定义修改
+    返回留档目录；失败返回 None（不影响主流程）。
+    """
+    conf_dir = _stash_conflict_dir(cache_dir)
+    try:
+        conf_dir.mkdir(parents=True, exist_ok=True)
+        parent = git_cmd(["rev-parse", f"{stash_ref}^1"], cwd=cache_dir).strip()
+        patch = subprocess.run(
+            ["git", "diff", "-U3", parent, stash_ref],
+            cwd=cache_dir, capture_output=True, text=True, encoding="utf-8", errors="ignore",
+            creationflags=0x08000000 if sys.platform == "win32" else 0,
+        ).stdout
+        (conf_dir / "changes.patch").write_text(patch or "", encoding="utf-8")
+
+        # stash@{0} 的第三个父提交即「含未跟踪文件的 index」，用它还原每个文件的完整内容
+        tree_ref = stash_ref + "^3"
+        ok_tree, tree_files = git_cmd_safe(["ls-tree", "-r", "--name-only", tree_ref], cwd=cache_dir)
+        if ok_tree and tree_files.strip():
+            for rel in tree_files.splitlines():
+                rel = rel.strip()
+                if not rel:
+                    continue
+                ok_blob, blob = git_cmd_safe(["show", f"{tree_ref}:{rel}"], cwd=cache_dir)
+                if not ok_blob:
+                    continue
+                out_file = conf_dir / Path(rel).name
+                if out_file.exists():
+                    out_file = conf_dir / (Path(rel).parent.name + "__" + Path(rel).name)
+                out_file.write_text(blob, encoding="utf-8")
+
+        (conf_dir / "README.txt").write_text(
+            f"仓库缓存: {cache_dir}\n导出时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            "本目录是自动更新检测到的本地改动快照（缓存仓库以远端为准，不做长期本地修改）。\n"
+            "changes.patch 可直接在缓存仓库执行 git apply 还原；\n"
+            "同目录的 .md/.py 等文件是当时的最新完整内容，便于找回本地自定义修改。\n",
+            encoding="utf-8",
+        )
+        return conf_dir
+    except Exception as e:
+        log(f"[Pull] 导出本地改动快照失败: {e}", level="ERROR")
+        return None
+
+def _restore_stash_to_worktree(cache_dir, stash_ref="stash@{0}"):
+    """
+    把 stash 还回工作区（上游未前进时的正常路径）：
+    依次尝试默认 / --theirs / --ours 三档策略，任一成功即 drop 并返回 True。
+    返回 True 表示改动已回到工作区（可能带冲突标记），False 表示上游已覆盖、需留档。
+    """
+    name = Path(cache_dir).name
+    for strategy in ([], ["--theirs"], ["--ours"]):
+        ok, _out = git_cmd_safe(["stash", "apply"] + strategy + [stash_ref], cwd=cache_dir)
+        if ok:
+            git_cmd_safe(["stash", "drop", stash_ref], cwd=cache_dir)
+            log(f"[Pull] 仓库缓存 {name} 的本地改动已还原到工作区（策略: {' '.join(strategy) or '默认'}），"
+                f"请手动提交或撤销后再依赖自动更新", level="WARNING")
+            return True
+    return False
+
+def _restore_or_archive_stash(cache_dir, stash_ref="stash@{0}"):
+    """
+    拉取成功后处理临时 stash：
+    1. 上游确实前进（HEAD 变化）→ 本地改动即使还原也会被 pull 再次拦住，直接落盘留档后丢弃
+    2. 上游未变 → 尝试 stash apply 把本地改动还回工作区（默认/--theirs/--ours 三档策略），
+       仍然失败则落盘留档后丢弃，保证下一次自动更新能继续
+    返回 True 表示改动已回到工作区，False 表示已落盘留档。
+    """
+    conf_dir = _export_stash_snapshot(cache_dir, stash_ref)
+    git_cmd_safe(["stash", "drop", stash_ref], cwd=cache_dir)
+    if conf_dir:
+        log(f"[Pull] 仓库缓存 {Path(cache_dir).name} 的本地改动已留档: {conf_dir}", level="WARNING")
+    return False
+
 def pull_single_source(src):
+    """
+    拉取单个仓库源的增量更新。
+    核心约束：控制台缓存的用途是「只读镜像」，因此拉取前先把本地改动 stash 起来，
+    拉取成功后尝试还原；还原不了就落盘到 .skillbox_conflicts 再从远端覆盖，
+    绝不因为本地改动导致 pull 永久失败。
+    """
     src_id = src["id"]
     git_url = src.get("git_url", "").strip()
     branch = src.get("branch", "main").strip()
@@ -364,17 +489,69 @@ def pull_single_source(src):
         cmd += ["--depth", "1", git_url, str(cache_dir)]
         git_cmd(cmd)
     else:
-        git_cmd(["fetch", "origin", branch], cwd=cache_dir)
-        git_cmd(["checkout", branch], cwd=cache_dir)
-        git_cmd(["pull", "origin", branch], cwd=cache_dir)
+        stashed = False
+        try:
+            # 1. 记录拉取前的 HEAD，用于判定 pull 之后本地 stash 是否还具备还原价值
+            ok_pre, head_before = git_cmd_safe(["rev-parse", "HEAD"], cwd=cache_dir)
+            head_before = head_before.strip() if ok_pre else ""
+
+            # 2. 本地改动（含未跟踪文件）先入库，避免 overwritten by merge 直接 abort
+            has_changes = bool(git_cmd(["status", "--porcelain"], cwd=cache_dir).strip())
+            if has_changes:
+                ok_stash, stash_out = git_cmd_safe(
+                    ["stash", "push", "-u", "-m", f"skillbox-auto-update {time.strftime('%Y%m%d-%H%M%S')}"],
+                    cwd=cache_dir,
+                )
+                stashed = bool(ok_stash and "No local changes" not in stash_out)
+                if stashed:
+                    log(f"[Pull] 仓库缓存 {src_id} 存在本地改动，已暂存后继续拉取更新")
+
+            # 3. 正常拉取（--ff-only：镜像不产生本地合并提交，分叉即报错暴露问题）
+            git_cmd(["fetch", "origin", branch], cwd=cache_dir)
+            ok_pull, pull_out = git_cmd_safe(["pull", "--ff-only", "origin", branch], cwd=cache_dir)
+            if not ok_pull:
+                # 极少数分叉场景：以远端为准强制对齐，本地提交仍保留在 reflog
+                ok_reset, reset_out = git_cmd_safe(["reset", "--hard", f"origin/{branch}"], cwd=cache_dir)
+                if not ok_reset:
+                    raise RuntimeError(f"拉取失败: {pull_out}; 强制对齐失败: {reset_out}")
+                log(f"[Pull] 仓库缓存 {src_id} 与远端分叉，已强制对齐 origin/{branch}", level="WARNING")
+
+            # 4. 还原本地改动：上游前进则本机手改已被覆盖，直接落盘留档；上游未动则尝试还回工作区
+            if stashed:
+                ok_now, head_now = git_cmd_safe(["rev-parse", "HEAD"], cwd=cache_dir)
+                head_now = head_now.strip() if ok_now else ""
+                upstream_advanced = bool(
+                    head_before and head_now and head_now != head_before
+                ) and git_cmd_safe(["merge-base", "--is-ancestor", head_before, head_now], cwd=cache_dir)[0]
+                if upstream_advanced:
+                    _restore_or_archive_stash(cache_dir, "stash@{0}")
+                    log(f"[Pull] 仓库缓存 {src_id} 已从 {head_before[:8]} 更新到 {head_now[:8]}，"
+                        f"本地改动不覆盖上游版本，已留档", level="WARNING")
+                else:
+                    restored = _restore_stash_to_worktree(cache_dir, "stash@{0}")
+                    if not restored:
+                        _restore_or_archive_stash(cache_dir, "stash@{0}")
+        except Exception:
+            # 拉取失败也要把本地改动还回去，避免「失败一次就把用户改动锁死在 stash 里」
+            if stashed:
+                _restore_stash_to_worktree(cache_dir, "stash@{0}")
+            raise
 
     # 记录最新更新时间
     now = time.time()
     src["last_pulled_ts"] = now
     src["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
 
+
 def auto_update_scheduler():
-    """后台常驻守护线程：按各仓库配置的定时频率自动拉取更新"""
+    """
+    后台常驻守护线程：按各仓库配置的定时频率自动拉取更新。
+
+    失败退避策略：同一仓库连续失败时，等待时间按 1x/2x/4x/8x 递增（上限 8 倍周期），
+    避免一次持续失败把日志刷爆、也无谓加重远端压力；成功后立即恢复正常周期。
+    """
+    failure_counts = {}   # {src_id: 连续失败次数}
+    next_retry_at = {}    # {src_id: 下次允许重试的时间戳}
     while True:
         try:
             time.sleep(30) # 每 30 秒巡检一次
@@ -385,17 +562,31 @@ def auto_update_scheduler():
 
             for s in sources:
                 interval_min = int(s.get("auto_update_interval", 0))
-                if interval_min > 0:
-                    last_ts = float(s.get("last_pulled_ts", 0))
-                    # 达到定时周期触发 pull
-                    if now - last_ts >= interval_min * 60:
-                        try:
-                            log(f"[Auto-Update] 触发仓库 [{s.get('name')}] 定时自动拉取更新...")
-                            pull_single_source(s)
-                            updated_any = True
-                            log(f"[Auto-Update] 仓库 [{s.get('name')}] 定时自动更新成功 (时间: {s.get('last_updated')})，已挂载软链接实时生效！")
-                        except Exception as e:
-                            log(f"[Auto-Update] 仓库 [{s.get('name')}] 定时自动更新失败: {e}", level="ERROR")
+                if interval_min <= 0:
+                    continue
+                src_id = s.get("id")
+                if now < next_retry_at.get(src_id, 0):
+                    continue
+                last_ts = float(s.get("last_pulled_ts", 0))
+                # 达到定时周期触发 pull
+                if now - last_ts >= interval_min * 60:
+                    try:
+                        log(f"[Auto-Update] 触发仓库 [{s.get('name')}] 定时自动拉取更新...")
+                        pull_single_source(s)
+                        updated_any = True
+                        failure_counts.pop(src_id, None)
+                        next_retry_at.pop(src_id, None)
+                        log(f"[Auto-Update] 仓库 [{s.get('name')}] 定时自动更新成功 (时间: {s.get('last_updated')})，已挂载软链接实时生效！")
+                    except Exception as e:
+                        fails = failure_counts.get(src_id, 0) + 1
+                        failure_counts[src_id] = fails
+                        backoff_min = interval_min * min(2 ** (fails - 1), 8)
+                        next_retry_at[src_id] = now + backoff_min * 60
+                        log(
+                            f"[Auto-Update] 仓库 [{s.get('name')}] 定时自动更新失败(第 {fails} 次)，"
+                            f"{int(backoff_min)} 分钟后重试: {e}",
+                            level="ERROR",
+                        )
 
             if updated_any:
                 save_config(cfg)
@@ -2061,6 +2252,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                 try:
                     all_lines = LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
                     lines = all_lines[-100:]
+                    # 当前日志不足 100 行时，从轮转文件补齐历史
+                    if len(lines) < 100:
+                        rotated = LOG_FILE.with_name(LOG_FILE.name + ".1")
+                        if rotated.exists():
+                            old_lines = rotated.read_text(encoding="utf-8", errors="ignore").splitlines()
+                            lines = old_lines[-(100 - len(lines)):] + lines
                 except Exception:
                     pass
             self.send_response(200)
